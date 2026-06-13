@@ -1,0 +1,35 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "CommonJS",
+		"moduleResolution": "Node",
+		"noLib": true,
+		"strict": true,
+		"jsx": "react",
+		"jsxFactory": "React.createElement",
+		"jsxFragmentFactory": "React.Fragment",
+		"rootDir": "src",
+		"outDir": "out",
+		"moduleDetection": "force",
+		"typeRoots": ["./node_modules/@rbxts"],
+		"allowSyntheticDefaultImports": true,
+		"resolveJsonModule": true,
+		"experimentalDecorators": true,
+		"downlevelIteration": true,
+		"declaration": true,
+		"plugins": [
+			{
+				"transform": "rbxts-transformer-luau-annotate"
+			}
+		],
+		"paths": {
+			"@transport/*": ["./src/transport/*"],
+			"@define/*": ["./src/define/*"],
+			"@binary/*": ["./src/binary/*"],
+			"@constant": ["./src/constant"],
+			"@type": ["./src/type"]
+		}
+	},
+	"include": ["src"],
+	"exclude": ["out"]
+}
