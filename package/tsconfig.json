@@ -16,19 +16,7 @@
 		"resolveJsonModule": true,
 		"experimentalDecorators": true,
 		"downlevelIteration": true,
-		"declaration": true,
-		"plugins": [
-			{
-				"transform": "rbxts-transformer-luau-annotate"
-			}
-		],
-		"paths": {
-			"@transport/*": ["./src/transport/*"],
-			"@define/*": ["./src/define/*"],
-			"@binary/*": ["./src/binary/*"],
-			"@constant": ["./src/constant"],
-			"@type": ["./src/type"]
-		}
+		"declaration": true
 	},
 	"include": ["src"],
 	"exclude": ["out"]

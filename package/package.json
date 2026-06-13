@@ -1,51 +1,10 @@
 {
-    "name": "@rbxts/typenet",
-    "version": "0.0.1",
-    "description": "High-performance, namespace-based network architecture for roblox-ts, enforced by strict type validation.",
-    "main": "out/init.luau",
-    "types": "out/index.d.ts",
-    "scripts": {
-        "login": "bunx npm login --auth-type=legacy",
-        "watch": "rbxtsc -p ./src -i ./out/include -w",
-        "compile": "rm -rf ./out && rbxtsc -p ./src -i ./out/include"
-    },
-    "keywords": [
-        "roblox-ts"
-    ],
-    "author": "Loner1536",
-    "license": "MIT",
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/Loner1536/Typenet"
-    },
-    "bugs": {
-        "url": "https://github.com/Loner1536/Typenet/issues"
-    },
-    "files": [
-        "out",
-        "!**/*.tsbuildinfo",
-        "!**/*.spec.lua",
-        "!**/*.spec.d.ts"
-    ],
-    "publishConfig": {
-        "access": "public"
-    },
-    "dependencies": {
-        "@rbxts/charm": "^0.10.0",
-        "@rbxts/lync": "github:Loner1536/lync#main",
-        "@rbxts/object-utils": "^1.0.4",
-        "@rbxts/react": "^17.3.7-ts.1",
-        "@rbxts/services": "^1.6.0",
-        "@rbxts/set-timeout": "^1.1.2",
-        "concurrently": "^9.2.1",
-        "turbo": "^2.9.14"
-    },
-    "devDependencies": {
-        "@biomejs/biome": "^2.4.15",
-        "@rbxts/compiler-types": "^3.0.0-types.0",
-        "@rbxts/types": "^1.0.921",
-        "chokidar-cli": "^3.0.0",
-        "roblox-ts": "3.0.0",
-        "typescript": "^5.9.3"
-    }
+	"name": "lumine-types",
+	"main": "src/index.ts",
+	"devDependencies": {
+		"typescript": "^5.0.0"
+	},
+	"peerDependencies": {
+		"typescript": ">=5.0.0"
+	}
 }
