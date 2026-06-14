@@ -13,10 +13,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Create fake .ssh dir so mount doesn't fail
+      - name: Create stub files for devcontainer mounts
         run: |
           mkdir -p /home/runner/.ssh
           touch /home/runner/.ssh/known_hosts
+          touch /home/runner/.npmrc
 
       - name: Install Dev Container CLI
         run: npm install -g @devcontainers/cli

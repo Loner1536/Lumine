@@ -10,8 +10,36 @@ permissions:
 
 jobs:
   build:
-    name: Build & release
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            binary: lumine
+            archive: lumine-linux-x86_64.zip
+
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            binary: lumine
+            archive: lumine-linux-aarch64.zip
+
+          - name: macos-x86_64
+            os: macos-13
+            binary: lumine
+            archive: lumine-macos-x86_64.zip
+
+          - name: macos-aarch64
+            os: macos-latest
+            binary: lumine
+            archive: lumine-macos-aarch64.zip
+
+          - name: windows-x86_64
+            os: windows-latest
+            binary: lumine.exe
+            archive: lumine-windows-x86_64.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -24,27 +52,38 @@ jobs:
         working-directory: package
         run: bun install
 
-      - name: Build binaries
+      - name: Build binary
         working-directory: package
-        run: |
-          mkdir -p dist
+        run: bun build src/index.ts --compile --outfile dist/${{ matrix.binary }}
 
-          bun build src/index.ts --compile --target bun-linux-x64    --outfile dist/lumine
-          cd dist && zip lumine-linux-x86_64.zip    lumine   && rm lumine   && cd ..
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        working-directory: package/dist
+        run: zip ${{ matrix.archive }} ${{ matrix.binary }}
 
-          bun build src/index.ts --compile --target bun-linux-arm64  --outfile dist/lumine
-          cd dist && zip lumine-linux-aarch64.zip   lumine   && rm lumine   && cd ..
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        working-directory: package/dist
+        shell: pwsh
+        run: Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ${{ matrix.archive }}
 
-          bun build src/index.ts --compile --target bun-darwin-x64   --outfile dist/lumine
-          cd dist && zip lumine-macos-x86_64.zip    lumine   && rm lumine   && cd ..
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: package/dist/${{ matrix.archive }}
 
-          bun build src/index.ts --compile --target bun-darwin-arm64 --outfile dist/lumine
-          cd dist && zip lumine-macos-aarch64.zip   lumine   && rm lumine   && cd ..
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
 
-          bun build src/index.ts --compile --target bun-windows-x64  --outfile dist/lumine.exe
-          cd dist && zip lumine-windows-x86_64.zip  lumine.exe && rm lumine.exe && cd ..
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: package/dist/*.zip
+          files: artifacts/*.zip
           generate_release_notes: true
