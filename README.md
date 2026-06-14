@@ -86,6 +86,33 @@ Lumine also writes `Lumine.lua` into the roblox-ts include folder (alongside `Ru
 
 ---
 
+## Installation
+
+### Via Rokit (recommended)
+
+Add Lumine to your project's `rokit.toml`:
+
+```toml
+[tools]
+lumine = "iambookillem/lumine@0.1.0"
+```
+
+Then run:
+
+```
+rokit install
+```
+
+Rokit downloads the correct binary for your platform automatically. No Bun or Node.js required on the machine.
+
+### Via pnpm / npm (roblox-ts workspace)
+
+```
+pnpm add -D lumine
+```
+
+---
+
 ## Setup
 
 ### 1. Enable declaration output in `tsconfig.json`

@@ -7,8 +7,7 @@
         "lumine": "./src/index.ts"
     },
     "scripts": {
-        "compile": "echo 'lumine: no build step needed, bun runs src/index.ts directly'",
-        "build": "bun build src/index.ts --outdir dist",
+        "build": "bun build src/index.ts --compile --outfile dist/lumine",
         "watch": "bun build src/index.ts --outdir dist --watch"
     },
     "dependencies": {
