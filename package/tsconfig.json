@@ -1,23 +1,11 @@
 {
 	"compilerOptions": {
 		"target": "ESNext",
-		"module": "CommonJS",
-		"moduleResolution": "Node",
-		"noLib": true,
+		"module": "ESNext",
+		"moduleResolution": "bundler",
 		"strict": true,
-		"jsx": "react",
-		"jsxFactory": "React.createElement",
-		"jsxFragmentFactory": "React.Fragment",
-		"rootDir": "src",
-		"outDir": "out",
-		"moduleDetection": "force",
-		"typeRoots": ["./node_modules/@rbxts"],
-		"allowSyntheticDefaultImports": true,
-		"resolveJsonModule": true,
-		"experimentalDecorators": true,
-		"downlevelIteration": true,
-		"declaration": true
+		"noUnusedLocals": true,
+		"noUnusedParameters": true
 	},
-	"include": ["src"],
-	"exclude": ["out"]
+	"include": ["src/**/*.ts"]
 }

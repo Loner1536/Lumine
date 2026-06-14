@@ -2,18 +2,12 @@
 	"name": "typenet-workspace",
 	"private": true,
 	"scripts": {
-		"build": "cd ./playground && pnpm run build",
-		"compile": "cd ./package && pnpm run compile && cd ../playground && pnpm run compile",
-		"dev": "cd ./package && pnpm run watch & cd ./playground && pnpm run dev"
+		"build": "bunx pnpm --filter playground build",
+		"compile": "bunx pnpm --filter lumine compile && bunx pnpm --filter playground compile",
+		"dev": "bunx pnpm --filter lumine watch & bunx pnpm --filter playground dev"
 	},
 	"packageManager": "pnpm@11.4.0",
 	"dependencies": {
 		"pnpm": "^11.4.0"
-	},
-	"resolutions": {
-		"@rbxts/pebble": "npm:@rbxts/loner1536-pebble@0.1.4"
-	},
-	"devDependencies": {
-		"rbxts-transformer-luau-annotate": "0.0.2-beta.1"
 	}
 }

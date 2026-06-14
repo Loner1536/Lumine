@@ -19,17 +19,9 @@
 		"rootDir": "./src",
 		"baseUrl": ".",
 		"outDir": "./out/src",
+		"declaration": true,
 		"experimentalDecorators": true,
 		"typeRoots": ["./node_modules/@rbxts"],
-		"plugins": [
-			{
-				"transform": "rbxts-transform-env"
-			},
-			{
-				"transform": "rbxts-transformer-flamework",
-				"obfuscation": false
-			}
-		],
 		"paths": {
 			"@interface/*": ["./src/client/interface/*"],
 			"@shared/*": ["./src/shared/*"],

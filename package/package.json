@@ -1,10 +1,21 @@
 {
-	"name": "lumine-types",
-	"main": "src/index.ts",
-	"devDependencies": {
-		"typescript": "^5.0.0"
+	"name": "lumine",
+	"version": "0.1.0",
+	"description": "Luau type annotation tool for compiled roblox-ts / rotor projects",
+	"type": "module",
+	"bin": {
+		"lumine": "./src/index.ts"
 	},
-	"peerDependencies": {
-		"typescript": ">=5.0.0"
+	"scripts": {
+		"dev": "bun run src/index.ts",
+		"build": "bun build --compile --minify src/index.ts --outfile lumine",
+		"build:all": "bun run build:linux && bun run build:windows && bun run build:macos-x64 && bun run build:macos-arm",
+		"build:linux": "bun build --compile --minify --target=bun-linux-x64 src/index.ts --outfile dist/lumine-linux-x86_64",
+		"build:windows": "bun build --compile --minify --target=bun-windows-x64 src/index.ts --outfile dist/lumine-windows-x86_64.exe",
+		"build:macos-x64": "bun build --compile --minify --target=bun-darwin-x64 src/index.ts --outfile dist/lumine-macos-x86_64",
+		"build:macos-arm": "bun build --compile --minify --target=bun-darwin-arm64 src/index.ts --outfile dist/lumine-macos-aarch64"
+	},
+	"dependencies": {
+		"typescript": "^5.8.3"
 	}
 }
