@@ -15,12 +15,11 @@ function printHelp() {
 Luau type annotation tool for compiled roblox-ts / rotor projects.
 
 Usage:
-  lumine            Run once — annotate all .luau files in outDir
-  lumine --watch    Watch mode — re-annotate on .luau changes (incremental)
-  lumine --dry-run  Show what would be annotated without writing
-  lumine init       First-time setup
-  lumine --version  Print version
-  lumine --help     Show this help`);
+  lumine               Run once — annotate all .luau files in outDir
+  lumine -w, --watch   Watch mode — re-annotate on .luau changes
+  lumine --dry-run     Show what would be annotated without writing
+  lumine -v, --version Print version
+  lumine -h, --help    Show this help`);
 }
 
 function walkLuau(dir: string): string[] {
@@ -266,35 +265,9 @@ async function runWatch() {
     });
 }
 
-function runInit() {
-    const tsconfigPath = join(process.cwd(), "tsconfig.json");
-    if (!existsSync(tsconfigPath)) { console.error("[lumine] error: tsconfig.json not found"); process.exit(1); }
-
-    const raw = readFileSync(tsconfigPath, "utf-8");
-    if (raw.includes('"declaration"')) {
-        console.log('[lumine] tsconfig.json already has "declaration" set');
-    } else {
-        writeFileSync(
-            tsconfigPath,
-            raw.replace(/"compilerOptions"\s*:\s*\{/, `"compilerOptions": {\n        "declaration": true,`),
-            "utf-8",
-        );
-        console.log('[lumine] added "declaration": true to tsconfig.json');
-    }
-
-    const luminePath = join(process.cwd(), "lumine.toml");
-    if (!existsSync(luminePath)) {
-        writeFileSync(luminePath, `includeDir = "out/include"\n`, "utf-8");
-        console.log("[lumine] created lumine.toml");
-    }
-
-    console.log("\n[lumine] setup complete. Run your compiler then: lumine");
-}
-
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) printHelp();
 else if (args.includes("--version") || args.includes("-v")) console.log(VERSION);
-else if (args.includes("init")) runInit();
 else if (args.includes("--watch") || args.includes("-w")) runWatch();
 else if (args.includes("--dry-run")) runOnce(true);
 else runOnce();
