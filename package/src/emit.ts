@@ -1,82 +1,106 @@
-import type { TypeManifest, TypeDeclaration } from "./types";
-import { convertType } from "./convert";
+/**
+ * emit.ts
+ *
+ * Converts TypeManifest type declarations into Luau source strings for
+ * inline injection into .luau files. Works entirely on LuauType AST nodes —
+ * no string parsing, no regex, no split(",").
+ *
+ * Also owns the Lumine.lua builtin file generation.
+ */
+import type { TypeManifest, TypeDecl } from "./types";
+import { printLuauType, mkRef, type LuauType, type LuauFnParam } from "./luau-types";
+import { LUMINE_BUILTIN_FUNCTIONS } from "./builtins";
 
-function selfName(decl: TypeDeclaration): string {
-    if (decl.typeParams.length === 0) return decl.name;
-    return `${decl.name}<${decl.typeParams.join(", ")}>`;
+// ── Type declaration emitter ──────────────────────────────────────────────────
+
+/**
+ * Print a single type declaration as a Luau `export type` statement.
+ * Interface table types with `isMethod` fields get `self` injected.
+ */
+function emitTypeDecl(decl: TypeDecl): string {
+    const params = decl.typeParams.length ? `<${decl.typeParams.join(", ")}>` : "";
+    const selfType = decl.typeParams.length
+        ? mkRef(
+            decl.name,
+            decl.typeParams.map((p) => mkRef(p)),
+        )
+        : mkRef(decl.name);
+
+    const body = emitTypeBody(decl.body, selfType);
+    return `export type ${decl.name}${params} = ${body}`;
 }
 
-function emitMember(
-    memberName: string,
-    memberType: string,
-    optional: boolean,
-    parentDecl: TypeDeclaration,
-    // empty set = no __luauAnnotateTypes. prefix (we're inside the generated file)
-    knownTypes: Set<string>,
-): string {
-    const optSuffix = optional ? "?" : "";
+/**
+ * Recursively print a LuauType body. For table types, handles method members
+ * by injecting `self: SelfType` as the first parameter — this cannot be done
+ * inside printLuauType because only declaration-level tables have a self type.
+ */
+function emitTypeBody(t: LuauType, selfType: LuauType): string {
+    if (t.kind !== "table") return printLuauType(t);
 
-    // Method type: stored as TS `(params) => ret` — convert to Luau with self injected
-    if (memberType.includes("=>")) {
-        const arrowIdx = memberType.lastIndexOf("=>");
-        const rawParams = memberType.slice(1, memberType.lastIndexOf(")", arrowIdx)).trim();
-        const rawRet = memberType.slice(arrowIdx + 2).trim();
+    const lines: string[] = [];
 
-        const self = `self: ${selfName(parentDecl)}`;
-        const paramStr = rawParams
-            ? rawParams
-                .split(",")
-                .map((p) => {
-                    const trimmed = p.trim();
-                    const colonIdx = trimmed.indexOf(":");
-                    if (colonIdx === -1) return convertType(trimmed, knownTypes);
-                    const pName = trimmed
-                        .slice(0, colonIdx)
-                        .replace(/^\.\.\./, "")
-                        .trim();
-                    const pType = convertType(trimmed.slice(colonIdx + 1).trim(), knownTypes);
-                    return `${pName}: ${pType}`;
-                })
-                .join(", ")
-            : "";
-
-        const luauRet = rawRet === "void" ? "()" : convertType(rawRet, knownTypes);
-        const fullParams = paramStr ? `${self}, ${paramStr}` : self;
-        return `    ${memberName}: (${fullParams}) -> ${luauRet}${optSuffix},`;
+    if (t.indexer) {
+        lines.push(
+            `    [${printLuauType(t.indexer.key, 0, true)}]: ${printLuauType(t.indexer.value, 0, true)},`,
+        );
     }
 
-    // Property type
-    const luauType = convertType(memberType, knownTypes);
-    return `    ${memberName}: ${luauType}${optSuffix},`;
-}
-
-function emitTypeDecl(decl: TypeDeclaration, knownTypes: Set<string>): string {
-    const typeParams = decl.typeParams.length > 0 ? `<${decl.typeParams.join(", ")}>` : "";
-    const lines = [`export type ${decl.name}${typeParams} = {`];
-    for (const member of decl.members) {
-        lines.push(emitMember(member.name, member.type, member.optional, decl, knownTypes));
-    }
-    lines.push("}");
-    return lines.join("\n");
-}
-
-export function generateTypesFile(manifests: TypeManifest[]): string {
-    const allTypes = new Map<string, TypeDeclaration>();
-    for (const manifest of manifests) {
-        for (const [, decl] of Object.entries(manifest.types)) {
-            allTypes.set(decl.name, decl);
+    for (const f of t.fields) {
+        const opt = f.optional ? "?" : "";
+        if (f.isMethod && f.type.kind === "function") {
+            // Inject self as first param
+            const selfParam: LuauFnParam = {
+                name: "self",
+                type: selfType,
+                optional: false,
+                rest: false,
+            };
+            const withSelf: LuauType = {
+                kind: "function",
+                params: [selfParam, ...f.type.params],
+                returns: f.type.returns,
+            };
+            lines.push(`    ${f.name}: ${printLuauType(withSelf)}${opt},`);
+        } else {
+            lines.push(`    ${f.name}: ${printLuauType(f.type, 0, true)}${opt},`);
         }
     }
-    if (allTypes.size === 0) return "";
 
-    // Inside the generated file, types reference each other by bare name — no prefix
-    const localTypes = new Set(allTypes.keys());
+    if (lines.length === 0) return "{}";
+    return `{\n${lines.join("\n")}\n}`;
+}
 
-    const lines = ["-- [generated by lumine — do not edit]", ""];
-    for (const decl of allTypes.values()) {
-        lines.push(emitTypeDecl(decl, localTypes));
+// ── Per-file inline type declarations ────────────────────────────────────────
+
+/**
+ * Generate all `export type` declarations for types defined in this manifest.
+ * Used to inline types directly into the corresponding .luau file.
+ *
+ * Deduplicates namespace types (registered under both "Ns.Foo" and "Ns_Foo").
+ */
+export function generateInlineTypeDecls(manifest: TypeManifest): string {
+    const seen = new Set<string>();
+    const lines: string[] = [];
+
+    for (const decl of Object.values(manifest.types)) {
+        if (seen.has(decl.name)) continue;
+        seen.add(decl.name);
+        lines.push(emitTypeDecl(decl));
         lines.push("");
     }
-    lines.push("return {}");
-    return lines.join("\n");
+
+    return lines.join("\n").trimEnd();
+}
+
+// ── Lumine.lua builtin file ───────────────────────────────────────────────────
+
+/**
+ * Generate the full content of Lumine.lua — the file placed next to
+ * RuntimeLib and Promise in the roblox-ts include folder.
+ * Contains Luau type function implementations for Partial, Required, etc.
+ * and the structural Promise<T> type.
+ */
+export function generateLumineFile(): string {
+    return `-- [generated by lumine — do not edit]\n\n${LUMINE_BUILTIN_FUNCTIONS}\nreturn {}\n`;
 }

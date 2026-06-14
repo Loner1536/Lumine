@@ -1,357 +1,271 @@
-// ── Roblox type passthrough ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// lumine type mapping test — covers every case in the mapping table
+// ═══════════════════════════════════════════════════════════════════
 
-export function teleportPlayer(player: Player, target: Vector3): void { }
-export function applyTransform(part: BasePart, cf: CFrame, offset: Vector3): CFrame {
-    return cf;
-}
-export function colorize(part: BasePart, color: Color3, brightness: number): void { }
+// ── Already working ──────────────────────────────────────────────────────────
 
-// ── Primitives ────────────────────────────────────────────────────────────────
-
-export function clamp(value: number, min: number, max: number): number {
-    return value;
+// Primitives
+export function prim_number(x: number): number {
+    return x;
 }
-export function formatName(name: string, prefix: string): string {
-    return name;
+export function prim_string(x: string): string {
+    return x;
 }
-export function toggle(state: boolean): boolean {
-    return !state;
+export function prim_boolean(x: boolean): boolean {
+    return x;
 }
-export function writeBytes(buf: buffer, offset: number): buffer {
-    return buf;
+export function prim_buffer(x: buffer): buffer {
+    return x;
 }
 
-// ── Optional / nullable ───────────────────────────────────────────────────────
+// void
+export function prim_void(): void { }
 
-export function findPlayer(userId: number): Player | undefined {
+// undefined / null → nil
+export function prim_undefined(): undefined {
     return undefined;
 }
-export function getTag(instance: Instance, key: string): string | undefined {
+export function prim_null(): null {
+    return undefined as never;
+}
+
+// any / never / unknown
+export function prim_any(x: any): any {
+    return x;
+}
+export function prim_unknown(x: unknown): unknown {
+    return x;
+}
+export function prim_never(): never {
+    throw "never";
+}
+
+// T | undefined → T?
+export function opt_union(x: number | undefined): string | undefined {
     return undefined;
 }
-export function resolveTarget(player: Player | undefined, fallback: Player): Player {
-    return fallback;
-}
-export function maybeNumber(x: number | undefined): number | undefined {
-    return undefined;
+
+// A | B union
+export function union_basic(x: string | number | boolean): string | number {
+    return x as never;
 }
 
-// ── Arrays ────────────────────────────────────────────────────────────────────
+// A & B intersection
+export interface IA {
+    a: number;
+}
+export interface IB {
+    b: string;
+}
+export function intersect_basic(x: IA & IB): IA & IB {
+    return x;
+}
 
-export function getPlayers(): Player[] {
+// T[] / Array<T>
+export function array_basic(x: number[]): string[] {
     return [];
 }
-export function mapNumbers(values: number[]): number[] {
-    return values;
-}
-export function zipNames(a: string[], b: string[]): string[][] {
+export function array_generic(x: Array<boolean>): Array<number> {
     return [];
 }
-export function collectParts(model: Model): BasePart[] {
+export function array_nested(x: string[][]): number[][] {
     return [];
 }
 
-// ── Map / Record / Set ────────────────────────────────────────────────────────
-
-export function buildRegistry(): Map<string, Player> {
+// Map<K, V> / Record<K, V>
+export function map_basic(): Map<string, number> {
     return new Map();
 }
-export function scoreTable(): Record<string, number> {
+export function record_basic(): Record<string, boolean> {
     return {};
 }
-export function taggedPlayers(): Map<Player, string[]> {
+export function map_nested(): Map<string, Map<number, boolean>> {
     return new Map();
 }
-export function uniqueIds(): Set<number> {
+
+// Set<T>
+export function set_basic(): Set<string> {
     return new Set();
 }
-export function permissionMap(): Map<string, Set<string>> {
-    return new Map();
+export function set_number(): Set<number> {
+    return new Set();
 }
 
-// ── Tuples ────────────────────────────────────────────────────────────────────
-
-export function splitHealth(health: number): [number, number] {
-    return [health, 100];
+// Function types (a: A) => B
+export function fn_basic(cb: (x: number) => string): void { }
+export function fn_void(cb: () => void): void { }
+export function fn_multi(cb: (a: string, b: number) => boolean): void { }
+export function fn_returns(): (x: number) => string {
+    return (x) => "";
 }
-export function playerWithScore(player: Player, score: number): [Player, number] {
-    return [player, score];
-}
-export function tripleState(): [boolean, number, string] {
-    return [true, 0, ""];
-}
+export function fn_higher(fn: (cb: (x: number) => void) => boolean): void { }
 
-// ── Function types ────────────────────────────────────────────────────────────
+// param?: T optional
+export function opt_param(a: string, b?: number, c?: boolean): void { }
 
-export function onPlayerAdded(callback: (player: Player) => void): void { }
-export function transform(value: number, fn: (x: number) => number): number {
+// ...args: T[] rest
+export function rest_string(...args: string[]): void { }
+export function rest_number(...values: number[]): number {
     return 0;
 }
-export function createFilter(
-    predicate: (player: Player, data: string) => boolean,
-): (player: Player) => boolean {
-    return () => false;
-}
-export function debounce(fn: () => void, delay: number): () => void {
-    return fn;
-}
+export function rest_mixed(first: string, ...rest: number[]): void { }
 
-// ── Intersection types ────────────────────────────────────────────────────────
-
-export interface Named {
-    name: string;
-}
-export interface Tagged {
+// Generic<T>
+export interface Container<T> {
+    value: T;
     tag: string;
 }
-export interface Identified {
-    id: number;
+export function generic_basic<T>(x: T): T {
+    return x;
+}
+export function generic_multi<T, U>(a: T, b: U): [T, U] {
+    return [a, b];
+}
+export function generic_constrained<T extends string>(x: T): T {
+    return x;
 }
 
-export function processEntity(entity: Named & Tagged): void { }
-export function mergeEntities(
-    a: Named & Identified,
-    b: Tagged & Identified,
-): Named & Tagged & Identified {
-    return a as never;
+// String literal singleton
+export function literal_string(x: "hello" | "world"): "hello" {
+    return "hello";
+}
+export function literal_status(s: "pending" | "active" | "done"): void { }
+
+// Boolean literal singleton
+export function literal_bool(x: true | false): boolean {
+    return x;
+}
+export function literal_true(x: true): void { }
+
+// Index signatures
+export function index_string(): { [key: string]: number } {
+    return {};
+}
+export function index_number(): { [key: number]: string } {
+    return {};
 }
 
-// ── Union types (non-optional) ────────────────────────────────────────────────
-
-export function damage(target: Player | BasePart, amount: number): void { }
-export function sendMessage(channel: string | number, message: string): void { }
-export function parseValue(raw: string | number | boolean): string {
-    return "";
-}
-
-// ── User-defined interfaces ───────────────────────────────────────────────────
-
-export interface Connection {
-    disconnect(): void;
-    readonly connected: boolean;
-}
-
-export interface Codec<T> {
-    encode(value: T, buf: buffer, offset: number): number;
-    decode(buf: buffer, offset: number): [T, number];
-    readonly size: number | undefined;
-}
-
-export interface NetworkPacket {
-    id: number;
-    channel: string;
-    payload: buffer;
-    timestamp: number;
-    sender: Player | undefined;
-}
-
-export interface PlayerState {
-    player: Player;
-    health: number;
-    position: Vector3;
-    connections: Connection[];
-    metadata: Map<string, string>;
-}
-
-// ── Generics ──────────────────────────────────────────────────────────────────
-
-export interface Pool<T> {
-    acquire(): T | undefined;
-    release(item: T): void;
-    readonly size: number;
-}
-
-export interface Signal<T extends unknown[]> {
-    connect(callback: (...args: T) => void): Connection;
-    fire(...args: T): void;
-    once(callback: (...args: T) => void): Connection;
-}
-
-export interface Repository<K, V> {
-    get(key: K): V | undefined;
-    set(key: K, value: V): void;
-    delete(key: K): boolean;
-    keys(): K[];
-}
-
-export interface RepositoryNonMethod<K, V> {
-    get: (key: K) => V | undefined;
-    set: (key: K, value: V) => void;
-    delete: (key: K) => boolean;
-    keys: () => K[];
-}
-
-export type PacketStats = {
-    sentBytes: {
-        raw: number;
-        overhead: number;
-        total: number;
-
-        totalRaw: number;
-        totalOverhead: number;
-        totalWire: number;
-    };
-    totalFires: number;
-    firstSentAt: number;
-    lastSentAt: number;
-
-    // Receive
-    receivedBytes: {
-        raw: number;
-        overhead: number;
-        total: number;
-
-        totalRaw: number;
-        totalOverhead: number;
-        totalWire: number;
-    };
-    totalReceived: number;
-    firstReceivedAt: number;
-    lastReceivedAt: number;
-
-    // Bandwidth
-    averageBytes: number;
-    peakBytes: number;
-
-    // Reliability
-    totalDropped: number;
-    dropRate: number;
-
-    // Latency
-    roundTripTime: number;
-    lastRoundTripAt: number;
-};
-
-export type SendTarget = Player | Player[] | ["Except", Player | Player[]];
-
-export type SendStats = {
-    stats: (fn?: (stats: PacketStats | undefined) => void) => void;
-};
-
-export type ReceiveStats<T> = T extends undefined
-    ? {
-        stats: (
-            fn?: (stats: PacketStats | undefined, player?: Player) => void,
-        ) => RBXScriptConnection;
-        Disconnect: () => void;
+// Namespace types
+export namespace Codec {
+    export interface Reader<T> {
+        read(buf: buffer, offset: number): T;
     }
-    : {
-        stats: (
-            fn?: (data: T, stats: PacketStats | undefined, player?: Player) => void,
-        ) => RBXScriptConnection;
-        Disconnect: () => void;
-    };
-
-export type QueryRequest<Res> = Promise<Res> & {
-    stats: (fn?: (stats: PacketStats | undefined) => void) => QueryRequest<Res>;
-};
-
-export type Query<Req, Res> = Req extends undefined
-    ? {
-        request: (target?: SendTarget) => QueryRequest<Res>;
-        response: (fn: (player?: Player) => Res) => {
-            stats: (
-                fn?: (stats: PacketStats | undefined, player?: Player) => void,
-            ) => RBXScriptConnection;
-            Disconnect: () => void;
-        };
-    }
-    : {
-        request: (data: Req, target?: SendTarget) => QueryRequest<Res>;
-        response: (fn: (data: Req, player?: Player) => Res) => {
-            stats: (
-                fn?: (data: Req, stats: PacketStats | undefined, player?: Player) => void,
-            ) => RBXScriptConnection;
-            Disconnect: () => void;
-        };
-    };
-
-export type Packet<T> = T extends undefined
-    ? {
-        send: (target?: Player | Player[] | ["Except", Player | Player[]]) => SendStats;
-        on: (fn: (player?: Player) => void) => ReceiveStats<T>;
-        once: (fn: (player?: Player) => void) => ReceiveStats<T>;
-    }
-    : {
-        send: (
-            data: T,
-            target?: Player | Player[] | ["Except", Player | Player[]],
-        ) => SendStats;
-        on: (fn: (data: T, player?: Player) => void) => ReceiveStats<T>;
-        once: (fn: (data: T, player?: Player) => void) => ReceiveStats<T>;
-    };
-
-// ── Functions using user-defined types ────────────────────────────────────────
-
-export function createCodec<T>(encoder: (v: T) => buffer, decoder: (b: buffer) => T): Codec<T> {
-    return undefined!;
-}
-export function createPool<T>(factory: () => T, maxSize: number): Pool<T> {
-    return undefined!;
-}
-export function connectSignal<T extends unknown[]>(
-    signal: Signal<T>,
-    handler: (...args: T) => void,
-): Connection {
-    return undefined!;
-}
-export function getPlayerState(
-    player: Player,
-    repo: Repository<Player, PlayerState>,
-): PlayerState | undefined {
-    return undefined;
-}
-
-// ── Namespace-style types (Namespace.Type pattern) ────────────────────────────
-
-export namespace Net {
-    export interface Packet {
-        id: number;
-        data: buffer;
-    }
-    export interface Handler {
-        process(packet: Packet): void;
+    export interface Writer<T> {
+        write(buf: buffer, offset: number, value: T): number;
     }
 }
+export function ns_reader<T>(r: Codec.Reader<T>): void { }
+export function ns_writer<T>(w: Codec.Writer<T>): void { }
+export function ns_both<T>(r: Codec.Reader<T>, w: Codec.Writer<T>): void { }
 
-export function dispatchPacket(packet: Net.Packet, handler: Net.Handler): void { }
-export function createHandler(fn: (packet: Net.Packet) => void): Net.Handler {
-    return undefined!;
+// ── Needs to be added ─────────────────────────────────────────────────────────
+
+// LuaTuple<[T, U]> — roblox-ts multiple returns
+export function tuple_pair(x: number): LuaTuple<[number, string]> {
+    return [x, ""] as never;
+}
+export function tuple_triple(): LuaTuple<[Player, Vector3, boolean]> {
+    return undefined as never;
+}
+export function tuple_optional(): LuaTuple<[string, number | undefined]> {
+    return undefined as never;
 }
 
-// ── Rest parameters ───────────────────────────────────────────────────────────
+// T extends X ? A : B → A & B intersection
+export type ConditionalSimple<T> = T extends undefined ? { a: number } : { b: string };
+export type ConditionalNested<T> = T extends string
+    ? { kind: "str"; value: string }
+    : T extends number
+    ? { kind: "num"; value: number }
+    : { kind: "other" };
 
-export function logAll(...messages: string[]): void { }
-export function sumAll(...values: number[]): number {
-    return 0;
+// keyof T → keyof<T>
+export function keyof_basic<T>(obj: T, key: keyof T): void { }
+export function keyof_record(key: keyof Record<string, number>): void { }
+
+// Readonly<T>
+export function readonly_basic(x: Readonly<{ a: number; b: string }>): void { }
+export function readonly_array(x: ReadonlyArray<number>): void { }
+export function readonly_map(x: ReadonlyMap<string, number>): void { }
+export function readonly_set(x: ReadonlySet<string>): void { }
+
+// NonNullable<T>
+export function nonnull_basic<T>(x: NonNullable<T>): T {
+    return x as never;
 }
-export function broadcastTo(message: string, ...players: Player[]): void { }
-
-// ── Optional parameters ───────────────────────────────────────────────────────
-
-export function connect(host: string, port?: number, timeout?: number): boolean {
-    return false;
+// Required<T>
+export interface Partial_User {
+    name?: string;
+    age?: number;
+    active?: boolean;
 }
-export function spawnNPC(position: Vector3, name?: string, health?: number): Model {
-    return undefined!;
+export function required_basic(x: Required<Partial_User>): void { }
+
+// Partial<T>
+export interface Full_User {
+    name: string;
+    age: number;
+    active: boolean;
+}
+export function partial_basic(x: Partial<Full_User>): void { }
+
+// Promise<T> — pass through
+export function promise_void(): Promise<void> {
+    return new Promise((value) => { });
+}
+export function promise_string(): Promise<string> {
+    return new Promise((value) => "");
+}
+export function promise_generic<T>(fn: () => Promise<T>): Promise<T> {
+    return new Promise(fn);
 }
 
-// ── Complex compound types ────────────────────────────────────────────────────
-
-export function batchProcess(
-    players: Player[],
-    handler: (player: Player, index: number) => Promise<void>,
-    options?: { timeout: number; retries: number },
-): Promise<Map<Player, boolean>> {
-    return undefined!;
+// RBXScriptSignal / RBXScriptConnection
+export function rbx_signal(sig: RBXScriptSignal): RBXScriptConnection {
+    return undefined as never;
+}
+export function rbx_connect(sig: RBXScriptSignal, fn: (x: string) => void): RBXScriptConnection {
+    return undefined as never;
 }
 
-export function createRouter<
-    TRoutes extends Record<string, (player: Player, data: buffer) => void>,
->(routes: TRoutes): { dispatch(route: keyof TRoutes, player: Player, data: buffer): void } {
-    return undefined!;
+// Tuple (lossy)
+export function tuple_basic(): [number, string, boolean] {
+    return [0, "", true];
+}
+export function tuple_pair_two(a: number, b: string): [number, string] {
+    return [a, b];
 }
 
-export function pipeline<T>(initial: T, ...transforms: Array<(value: T) => T>): T {
-    return initial;
+// ── Not representable → should emit any or strip ──────────────────────────────
+
+// Mapped types → any
+export type MappedPartial<T> = { [K in keyof T]?: T[K] };
+export type MappedReadonly<T> = { readonly [K in keyof T]: T[K] };
+export function mapped_partial<T>(x: MappedPartial<T>): void { }
+export function mapped_readonly<T>(x: MappedReadonly<T>): void { }
+
+// Template literal types → string
+export type EventName = `on${string}`;
+export type KeyPath = `${string}.${string}`;
+export function template_event(name: EventName): void { }
+export function template_path(path: KeyPath): void { }
+
+// ReturnType / Parameters → any
+export function higher_returntype<T extends (...args: any[]) => any>(fn: T): ReturnType<T> {
+    return undefined as never;
+}
+export function higher_params<T extends (...args: any[]) => any>(fn: T): Parameters<T> {
+    return undefined as never;
+}
+
+// Number literal types → fallback
+export function num_literal(x: 0 | 1 | 2): number {
+    return x;
+}
+export function num_port(port: 80 | 443 | 8080): void { }
+
+// infer → any
+export type Unpack<T> = T extends Array<infer U> ? U : never;
+export function unpack_array<T>(arr: T[]): Unpack<T[]> {
+    return undefined as never;
 }

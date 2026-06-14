@@ -1,13 +1,13 @@
 {
-	"name": "typenet-workspace",
-	"private": true,
-	"scripts": {
-		"build": "bunx pnpm --filter playground build",
-		"compile": "bunx pnpm --filter lumine compile && bunx pnpm --filter playground compile",
-		"dev": "bunx pnpm --filter lumine watch & bunx pnpm --filter playground dev"
-	},
-	"packageManager": "pnpm@11.4.0",
-	"dependencies": {
-		"pnpm": "^11.4.0"
-	}
+    "name": "typenet-workspace",
+    "private": true,
+    "scripts": {
+        "build": "bunx pnpm --filter playground build",
+        "compile": "bunx pnpm --filter playground compile",
+        "dev": "bunx pnpm --filter playground dev"
+    },
+    "packageManager": "pnpm@11.4.0",
+    "dependencies": {
+        "pnpm": "^11.4.0"
+    }
 }
