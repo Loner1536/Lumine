@@ -27,7 +27,7 @@ jobs:
             archive: lumine-linux-aarch64.zip
 
           - name: macos-x86_64
-            os: macos-13
+            os: macos-14
             binary: lumine
             archive: lumine-macos-x86_64.zip
 
@@ -87,3 +87,4 @@ jobs:
         with:
           files: artifacts/*.zip
           generate_release_notes: true
+

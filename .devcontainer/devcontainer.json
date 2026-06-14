@@ -14,15 +14,18 @@
 	"containerEnv": {
 		"NODE_ENV": "development"
 	},
+	"remoteEnv": {
+		"SSH_AUTH_SOCK": "${localEnv:SSH_AUTH_SOCK}"
+	},
 	"mounts": [
 		{
 			"source": "${localEnv:HOME}/.ssh",
-			"target": "/home/root/.ssh",
+			"target": "/root/.ssh",
 			"type": "bind"
 		},
 		{
 			"source": "${localEnv:HOME}/.npmrc",
-			"target": "/home/root/.npmrc",
+			"target": "/root/.npmrc",
 			"type": "bind"
 		}
 	],
