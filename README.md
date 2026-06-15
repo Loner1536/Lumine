@@ -94,7 +94,7 @@ Add Lumine to your project's `rokit.toml`:
 
 ```toml
 [tools]
-lumine = "loner1536/lumine@0.1.6"
+lumine = "loner1536/lumine@0.1.9"
 ```
 
 Then run:
@@ -151,7 +151,7 @@ includeDir = "out/include"
 lumine                  Run once — annotate all .luau files in outDir
 lumine -w, --watch      Watch mode — re-annotate on .luau changes (debounced 800ms)
 lumine --dry-run        Show what would be annotated without writing
-lumine --verbose        Logs more Info in terminal
+lumine --verbose        Log each annotated file (also works with --watch)
 lumine -v, --version    Print version
 lumine -h, --help       Show help
 ```

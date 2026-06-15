@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync, renameSync } from "fs";
+import {
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    statSync,
+    writeFileSync,
+    readFileSync,
+    renameSync,
+} from "fs";
 import { createHash } from "crypto";
 import { join, relative, dirname, basename } from "path";
 import { loadConfig } from "./config";
@@ -10,7 +18,7 @@ import { generateLumineFile } from "./emit";
 import { generateDirTypesModule } from "./dirs";
 import type { TypeManifest, AnnotationResult, TypeDecl } from "./types";
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.9";
 
 function printHelp() {
     console.log(`lumine v${VERSION}
@@ -65,7 +73,11 @@ function hashString(s: string): string {
 function safeWrite(filePath: string, content: string): void {
     let mode = 0o644;
     if (existsSync(filePath)) {
-        try { mode = statSync(filePath).mode & 0o777; } catch { /* use default */ }
+        try {
+            mode = statSync(filePath).mode & 0o777;
+        } catch {
+            /* use default */
+        }
     }
     const tmp = `${filePath}.tmp`;
     writeFileSync(tmp, content, { encoding: "utf-8", mode });
@@ -276,7 +288,10 @@ async function run(ctx: RunContext = {}) {
     }
 
     // Step C: Build deduped dirEntries with renamed decl.name and originalName.
-    const dirEntries = new Map<string, Array<{ from: string; decl: TypeDecl; originalName: string }>>();
+    const dirEntries = new Map<
+        string,
+        Array<{ from: string; decl: TypeDecl; originalName: string }>
+    >();
     for (const [dir, rawTypes] of dirRawTypes) {
         const entries: Array<{ from: string; decl: TypeDecl; originalName: string }> = [];
         const seenExported = new Set<string>();
@@ -339,7 +354,10 @@ async function run(ctx: RunContext = {}) {
     for (const [, entries] of dirEntries) {
         for (const { from, originalName } of entries) {
             let s = extractedByFile.get(from);
-            if (!s) { s = new Set(); extractedByFile.set(from, s); }
+            if (!s) {
+                s = new Set();
+                extractedByFile.set(from, s);
+            }
             s.add(originalName);
         }
     }
