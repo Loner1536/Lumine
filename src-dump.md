@@ -1542,6 +1542,13 @@ interface Ctx {
 	 * Only names in this set get the namespace prefix applied.
 	 */
 	nsSiblings?: Set<string>;
+	/**
+	 * Map of `import * as Alias` aliases to their module specifier.
+	 * e.g. "Type" → "./namespace-test"
+	 * Used in convertTypeRef to strip the alias prefix from dotted type names
+	 * like `Type.Queue.Entry` → `Queue_Entry`, so cross-file requires fire correctly.
+	 */
+	nsImportAliases?: Map<string, string>;
 }
 
 function deeper(ctx: Ctx): Ctx {
@@ -1773,6 +1780,20 @@ function convertTypeRef(node: ts.TypeReferenceNode, ctx: Ctx): LuauType {
 	const args = rawArgs.map((a) => (a.kind === "void" ? LuauNil : a));
 
 	if (name.includes(".")) {
+		// Check if the first segment is a `import * as Alias` alias.
+		// e.g. `Type.Queue.Entry` where `Type` is `import * as Type from "./namespace-test"`.
+		// In that case the alias is just an import indirection — strip it and convert
+		// the remainder (`Queue.Entry` → `Queue_Entry`) so the name matches what the
+		// target file's manifest registers and the cross-file require fires correctly.
+		const firstDot = name.indexOf(".");
+		const prefix = name.slice(0, firstDot);
+		if (ctx.nsImportAliases?.has(prefix)) {
+			const remainder = name.slice(firstDot + 1); // "Queue.Entry"
+			const luauName = remainder.replace(/\./g, "_"); // "Queue_Entry"
+			return args.length ? mkRef(luauName, args) : mkRef(luauName);
+		}
+
+		// True namespace dot (Ns.Type declared in this file) → flatten to underscore
 		const luauName = name.replace(/\./g, "_");
 		return args.length ? mkRef(luauName, args) : mkRef(luauName);
 	}
@@ -1978,6 +1999,29 @@ function collectNsSiblings(body: ts.ModuleBlock): Set<string> {
 	return names;
 }
 
+// ── Collect namespace import aliases (`import * as X from "..."`) ─────────────
+
+/**
+ * Scan top-level import declarations for namespace imports (`import * as X`).
+ * Returns a map of alias → module specifier, e.g. `"Type" → "./namespace-test"`.
+ * These aliases are used in convertTypeRef to strip the import prefix from dotted
+ * type names like `Type.Queue.Entry` → `Queue_Entry`, so that cross-file type
+ * tracking in annotate.ts can match them against the correct origin manifest.
+ */
+function collectNsImportAliases(source: ts.SourceFile): Map<string, string> {
+	const aliases = new Map<string, string>();
+	ts.forEachChild(source, (node) => {
+		if (!ts.isImportDeclaration(node)) return;
+		const clause = node.importClause;
+		if (!clause?.namedBindings) return;
+		if (!ts.isNamespaceImport(clause.namedBindings)) return;
+		const alias = clause.namedBindings.name.text;
+		const specifier = (node.moduleSpecifier as ts.StringLiteral).text;
+		aliases.set(alias, specifier);
+	});
+	return aliases;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function extractManifest(dtsPath: string): TypeManifest {
@@ -1985,8 +2029,11 @@ export function extractManifest(dtsPath: string): TypeManifest {
 	const source = ts.createSourceFile(dtsPath, content, ts.ScriptTarget.ESNext, true);
 	const manifest: TypeManifest = { functions: {}, types: {} };
 
+	// Collect `import * as Alias` bindings so convertTypeRef can strip them.
+	const nsImportAliases = collectNsImportAliases(source);
+
 	ts.forEachChild(source, (node) => {
-		const ctx: Ctx = { source, depth: 0 };
+		const ctx: Ctx = { source, depth: 0, nsImportAliases };
 
 		// ── Function declarations ─────────────────────────────────────────────
 		if (ts.isFunctionDeclaration(node) && node.name) {
@@ -2044,13 +2091,14 @@ export function extractManifest(dtsPath: string): TypeManifest {
 					if (ts.isInterfaceDeclaration(child)) {
 						const childName = child.name.text;
 						const { names: typeParamNames, defaults: typeParamDefaults } =
-							extractTypeParams(child, { source, depth: 0 });
+							extractTypeParams(child, { source, depth: 0, nsImportAliases });
 						const nsCtx: Ctx = {
 							source,
 							depth: 0,
 							namespace: nsName,
 							nsSiblings,
 							typeParams: new Set(typeParamNames),
+							nsImportAliases,
 						};
 						const fields = extractInterfaceMembers(child.members, source, nsCtx);
 						const luauName = `${nsName}_${childName}`;
@@ -2069,13 +2117,14 @@ export function extractManifest(dtsPath: string): TypeManifest {
 					if (ts.isTypeAliasDeclaration(child)) {
 						const childName = child.name.text;
 						const { names: typeParamNames, defaults: typeParamDefaults } =
-							extractTypeParams(child, { source, depth: 0 });
+							extractTypeParams(child, { source, depth: 0, nsImportAliases });
 						const nsCtx: Ctx = {
 							source,
 							depth: 0,
 							namespace: nsName,
 							nsSiblings,
 							typeParams: new Set(typeParamNames),
+							nsImportAliases,
 						};
 						const body = tsNodeToLuau(child.type, nsCtx);
 						const luauName = `${nsName}_${childName}`;
