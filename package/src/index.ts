@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from "fs";
 import { createHash } from "crypto";
-import { join, relative, dirname } from "path";
+import { join, relative, dirname, resolve } from "path";
 import { loadConfig } from "./config";
 import { extractManifest } from "./extract";
 import { annotateFile } from "./annotate";
@@ -22,12 +22,23 @@ Usage:
   lumine -h, --help    Show this help`);
 }
 
-function walkLuau(dir: string): string[] {
+const VENDOR_DIR_NAMES = new Set(["_Index", "include", "node_modules", "packages", "Packages", "rbxts_include"]);
+
+function isInsidePath(path: string, parent: string): boolean {
+    const rel = relative(parent, path);
+    return rel !== "" && !rel.startsWith("..");
+}
+
+function walkLuau(dir: string, ignoredDirs: Set<string> = new Set()): string[] {
     const results: string[] = [];
     for (const entry of readdirSync(dir)) {
         const full = join(dir, entry);
         const stat = statSync(full);
-        if (stat.isDirectory()) results.push(...walkLuau(full));
+        if (stat.isDirectory()) {
+            const resolved = resolve(full);
+            if (VENDOR_DIR_NAMES.has(entry) || ignoredDirs.has(resolved)) continue;
+            results.push(...walkLuau(full, ignoredDirs));
+        }
         else if (entry.endsWith(".luau")) results.push(full);
     }
     return results;
@@ -61,13 +72,25 @@ interface ManifestCache {
 
 // ── Change detection ──────────────────────────────────────────────────────────
 
-function hasChangedFiles(dir: string, knownHashes: Map<string, string>): boolean {
+function hasChangedFiles(
+    dir: string,
+    knownHashes: Map<string, string>,
+    ignoredDirs: Set<string> = new Set(),
+): boolean {
     if (!existsSync(dir)) return false;
-    for (const path of walkLuau(dir)) {
+    for (const path of walkLuau(dir, ignoredDirs)) {
         const current = hashFile(path);
         if (!knownHashes.has(path) || current !== knownHashes.get(path)) return true;
     }
     return false;
+}
+
+function getIgnoredDirs(outDir: string, includeDir: string): Set<string> {
+    const ignored = new Set<string>();
+    const resolvedOutDir = resolve(outDir);
+    const resolvedIncludeDir = resolve(includeDir);
+    if (isInsidePath(resolvedIncludeDir, resolvedOutDir)) ignored.add(resolvedIncludeDir);
+    return ignored;
 }
 
 // ── Lumine.lua generation ─────────────────────────────────────────────────────
@@ -97,6 +120,7 @@ async function run(ctx: RunContext = {}) {
     const { outDir, declaration, rojoProject, includeDir } = config;
     const { dryRun = false, fileCache, manifestCache, diskHashes } = ctx;
     const lumineFilePath = join(includeDir, "Lumine.lua");
+    const ignoredDirs = getIgnoredDirs(outDir, includeDir);
 
     if (!existsSync(outDir)) {
         console.error(`[lumine] error: outDir "${outDir}" does not exist — run your compiler first`);
@@ -105,7 +129,7 @@ async function run(ctx: RunContext = {}) {
 
     ensureLumineFile(lumineFilePath, dryRun);
 
-    const luauFiles = walkLuau(outDir).filter(f => f !== lumineFilePath);
+    const luauFiles = walkLuau(outDir, ignoredDirs).filter(f => f !== lumineFilePath);
     if (luauFiles.length === 0) { console.log("[lumine] no .luau files found"); return; }
 
     // ── Phase 1: Extract manifests ────────────────────────────────────────────
@@ -217,7 +241,8 @@ async function runOnce(dryRun = false) { await run({ dryRun }); }
 
 async function runWatch() {
     const cwd = process.cwd();
-    const { outDir } = loadConfig(cwd);
+    const { outDir, includeDir } = loadConfig(cwd);
+    const ignoredDirs = getIgnoredDirs(outDir, includeDir);
 
     const fileCache = new Map<string, FileCache>();
     const manifestCache = new Map<string, ManifestCache>();
@@ -237,7 +262,7 @@ async function runWatch() {
 
     const poll = setInterval(() => {
         if (running) return;
-        if (!hasChangedFiles(outDir, diskHashes)) return;
+        if (!hasChangedFiles(outDir, diskHashes, ignoredDirs)) return;
         if (debounceTimer) return; // already scheduled — let it fire
 
         // 800ms quiet-period: rbxtsc writes multiple files incrementally;
