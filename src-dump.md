@@ -1526,6 +1526,22 @@ const UNSUPPORTED_UTILITY = new Set([
 interface Ctx {
 	source: ts.SourceFile;
 	depth: number;
+	/**
+	 * When inside a namespace block, the namespace name (e.g. "Packet").
+	 * Used to qualify bare sibling type references (e.g. `Builder` → `Packet_Builder`).
+	 */
+	namespace?: string;
+	/**
+	 * Type parameter names currently in scope (e.g. ["T", "TReq", "TRes"]).
+	 * These must NOT be prefixed with the namespace — they are generic variables.
+	 */
+	typeParams?: Set<string>;
+	/**
+	 * The set of type names declared directly inside the current namespace
+	 * (e.g. {"Entry", "PooledBuilder"} for namespace Queue).
+	 * Only names in this set get the namespace prefix applied.
+	 */
+	nsSiblings?: Set<string>;
 }
 
 function deeper(ctx: Ctx): Ctx {
@@ -1747,10 +1763,33 @@ function convertTypeRef(node: ts.TypeReferenceNode, ctx: Ctx): LuauType {
 		return rawArgs.length ? mkRef(name, rawArgs) : mkRef(name);
 	}
 
-	// User-defined type — convert namespace dots to underscores
-	const luauName = name.replace(/\./g, "_");
+	// User-defined type — convert namespace dots to underscores.
+	// If the name contains a dot (e.g. `Codec.External`, `Packet.Definition`),
+	// the replace handles it correctly regardless of context.
+	// If the name is bare with no dot, we need to decide whether to qualify it:
+	//   - Type parameters (T, TReq, etc.) → never qualify, pass through as-is
+	//   - Sibling types within the same namespace (e.g. `Builder` inside `Packet`) → qualify
+	//   - Everything else (top-level types like `Group`, `Connection`) → pass through
 	const args = rawArgs.map((a) => (a.kind === "void" ? LuauNil : a));
-	return args.length ? mkRef(luauName, args) : mkRef(luauName);
+
+	if (name.includes(".")) {
+		const luauName = name.replace(/\./g, "_");
+		return args.length ? mkRef(luauName, args) : mkRef(luauName);
+	}
+
+	// Bare name: check if it's a type param in scope — if so, never prefix
+	if (ctx.typeParams?.has(name)) {
+		return args.length ? mkRef(name, args) : mkRef(name);
+	}
+
+	// Bare name: check if it's a sibling declared in the current namespace
+	if (ctx.namespace && ctx.nsSiblings?.has(name)) {
+		const luauName = `${ctx.namespace}_${name}`;
+		return args.length ? mkRef(luauName, args) : mkRef(luauName);
+	}
+
+	// Top-level type or unknown — pass through as-is
+	return args.length ? mkRef(name, args) : mkRef(name);
 }
 
 // ── Function type conversion ──────────────────────────────────────────────────
@@ -1921,6 +1960,24 @@ function extractInterfaceMembers(
 	return fields;
 }
 
+// ── Collect sibling type names from a namespace block ────────────────────────
+
+/**
+ * Walk a namespace's module block and collect the names of all type aliases
+ * and interfaces declared directly inside it. Used to build `nsSiblings` so
+ * that bare references like `Builder` inside namespace `Packet` are correctly
+ * prefixed to `Packet_Builder`, while unrelated bare names (`Group`,
+ * `Connection`, type params) are left alone.
+ */
+function collectNsSiblings(body: ts.ModuleBlock): Set<string> {
+	const names = new Set<string>();
+	ts.forEachChild(body, (child) => {
+		if (ts.isTypeAliasDeclaration(child)) names.add(child.name.text);
+		if (ts.isInterfaceDeclaration(child)) names.add(child.name.text);
+	});
+	return names;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function extractManifest(dtsPath: string): TypeManifest {
@@ -1978,18 +2035,28 @@ export function extractManifest(dtsPath: string): TypeManifest {
 			const nsName = node.name.text;
 			const body = node.body;
 			if (body && ts.isModuleBlock(body)) {
+				// Pre-collect all sibling type names in this namespace so that bare
+				// references inside member types can be correctly qualified.
+				const nsSiblings = collectNsSiblings(body);
+
 				ts.forEachChild(body, (child) => {
 					// 1. Process Interfaces inside namespaces
 					if (ts.isInterfaceDeclaration(child)) {
 						const childName = child.name.text;
-						const nsCtx: Ctx = { source, depth: 0 };
-						const { names: typeParams, defaults: typeParamDefaults } =
-							extractTypeParams(child, nsCtx);
+						const { names: typeParamNames, defaults: typeParamDefaults } =
+							extractTypeParams(child, { source, depth: 0 });
+						const nsCtx: Ctx = {
+							source,
+							depth: 0,
+							namespace: nsName,
+							nsSiblings,
+							typeParams: new Set(typeParamNames),
+						};
 						const fields = extractInterfaceMembers(child.members, source, nsCtx);
 						const luauName = `${nsName}_${childName}`;
 						const decl: TypeDecl = {
 							name: luauName,
-							typeParams,
+							typeParams: typeParamNames,
 							typeParamDefaults,
 							body: { kind: "table", fields },
 						};
@@ -1998,17 +2065,23 @@ export function extractManifest(dtsPath: string): TypeManifest {
 						manifest.types[luauName] = decl;
 					}
 
-					// 2. ADD THIS: Process Type Aliases inside namespaces
+					// 2. Process Type Aliases inside namespaces
 					if (ts.isTypeAliasDeclaration(child)) {
 						const childName = child.name.text;
-						const nsCtx: Ctx = { source, depth: 0 };
-						const { names: typeParams, defaults: typeParamDefaults } =
-							extractTypeParams(child, nsCtx);
+						const { names: typeParamNames, defaults: typeParamDefaults } =
+							extractTypeParams(child, { source, depth: 0 });
+						const nsCtx: Ctx = {
+							source,
+							depth: 0,
+							namespace: nsName,
+							nsSiblings,
+							typeParams: new Set(typeParamNames),
+						};
 						const body = tsNodeToLuau(child.type, nsCtx);
 						const luauName = `${nsName}_${childName}`;
 						const decl: TypeDecl = {
 							name: luauName,
-							typeParams,
+							typeParams: typeParamNames,
 							typeParamDefaults,
 							body,
 						};
