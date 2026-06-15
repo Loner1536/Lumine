@@ -19,14 +19,8 @@ jobs:
           touch /home/runner/.ssh/known_hosts
           touch /home/runner/.npmrc
 
-      - name: Install Dev Container CLI
-        run: npm install -g @devcontainers/cli
-
-      - name: Build Dev Container
-        run: devcontainer build --workspace-folder . --config .devcontainer/devcontainer.json
-
-      - name: Start Dev Container
-        run: devcontainer up --workspace-folder . --config .devcontainer/devcontainer.json
-
-      - name: Run test command inside container
-        run: devcontainer exec --workspace-folder . --config .devcontainer/devcontainer.json -- bash -lc "echo container ok"
+      - name: Build and test Dev Container
+        uses: devcontainers/ci@v0.3
+        with:
+          configFile: .devcontainer/devcontainer.json
+          runCmd: echo "container ok"
