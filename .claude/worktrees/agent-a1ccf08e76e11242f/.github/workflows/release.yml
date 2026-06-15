@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # 👈 This enables the "Run workflow" button on GitHub
+    inputs:
+      tag_name:
+        description: 'Release Tag Name (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            binary: lumine
+            archive: lumine-linux-x86_64.zip
+
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            binary: lumine
+            archive: lumine-linux-aarch64.zip
+
+          - name: macos-x86_64
+            os: macos-14
+            binary: lumine
+            archive: lumine-macos-x86_64.zip
+
+          - name: macos-aarch64
+            os: macos-latest
+            binary: lumine
+            archive: lumine-macos-aarch64.zip
+
+          - name: windows-x86_64
+            os: windows-latest
+            binary: lumine.exe
+            archive: lumine-windows-x86_64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: package
+        run: bun install
+
+      - name: Build binary
+        working-directory: package
+        run: bun build src/index.ts --compile --outfile dist/${{ matrix.binary }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        working-directory: package/dist
+        run: zip ${{ matrix.archive }} ${{ matrix.binary }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        working-directory: package/dist
+        shell: pwsh
+        run: Compress-Archive -Path ${{ matrix.binary }} -DestinationPath ${{ matrix.archive }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: package/dist/${{ matrix.archive }}
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # 👈 Uses input tag if run manually, or the pushed tag if run automatically
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          files: artifacts/*.zip
+          generate_release_notes: true

@@ -14,183 +14,174 @@
  *   #4  annotated++ no longer inflated by type block injection
  *   #5  sentinel no longer permanently blocks cross-file updates
  *   #6  require-line detection is bracket-aware, not regex-fragile
- *   #7  own-file type decls removed — types now live in _lumine_types.luau only
  */
 import { resolve } from "path";
 import { randomUUID } from "crypto";
 import type { TypeManifest, TypeDecl, AnnotationResult } from "./types";
 import { LuauAny, printReturn, printParam, typeUsesBuiltins, type LuauType } from "./luau-types";
+import { generateInlineTypeDecls } from "./emit";
 import { resolveRojoPath, buildDirectRequire, buildRelativeRequire } from "./rojo";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function escapeRegExp(s: string): string {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ── Signature finding (unchanged — still operates on Luau source strings) ─────
 
 function findClosingParen(src: string, openIdx: number): number {
-    let parenDepth = 0,
-        braceDepth = 0;
-    for (let i = openIdx; i < src.length; i++) {
-        const c = src[i];
-        if (c === "{") braceDepth++;
-        else if (c === "}") braceDepth--;
-        else if (braceDepth === 0) {
-            if (c === "(") parenDepth++;
-            else if (c === ")") {
-                parenDepth--;
-                if (parenDepth === 0) return i;
-            }
-        }
-    }
-    return -1;
+	let parenDepth = 0,
+		braceDepth = 0;
+	for (let i = openIdx; i < src.length; i++) {
+		const c = src[i];
+		if (c === "{") braceDepth++;
+		else if (c === "}") braceDepth--;
+		else if (braceDepth === 0) {
+			if (c === "(") parenDepth++;
+			else if (c === ")") {
+				parenDepth--;
+				if (parenDepth === 0) return i;
+			}
+		}
+	}
+	return -1;
 }
 
 function findClosingAngle(src: string, openIdx: number): number {
-    let depth = 0;
-    for (let i = openIdx; i < src.length; i++) {
-        if (src[i] === "<") depth++;
-        else if (src[i] === ">") {
-            depth--;
-            if (depth === 0) return i;
-        }
-    }
-    return -1;
+	let depth = 0;
+	for (let i = openIdx; i < src.length; i++) {
+		if (src[i] === "<") depth++;
+		else if (src[i] === ">") {
+			depth--;
+			if (depth === 0) return i;
+		}
+	}
+	return -1;
 }
 
 function findSignatureEnd(src: string, closeParen: number): number {
-    let i = closeParen + 1;
-    while (i < src.length && src[i] === " ") i++;
-    if (i >= src.length || src[i] !== ":") return closeParen + 1;
-    i++;
-    while (i < src.length && src[i] === " ") i++;
-    let depth = 0;
-    while (i < src.length) {
-        const c = src[i];
-        if (c === "(" || c === "{" || c === "[") depth++;
-        else if (c === ")" || c === "}" || c === "]") depth--;
-        // < > intentionally omitted — Luau's -> arrow contains > which is not a bracket
-        else if (c === "\n" && depth === 0) break;
-        i++;
-    }
-    return i;
+	let i = closeParen + 1;
+	while (i < src.length && src[i] === " ") i++;
+	if (i >= src.length || src[i] !== ":") return closeParen + 1;
+	i++;
+	while (i < src.length && src[i] === " ") i++;
+	let depth = 0;
+	while (i < src.length) {
+		const c = src[i];
+		if (c === "(" || c === "{" || c === "[") depth++;
+		else if (c === ")" || c === "}" || c === "]") depth--;
+		// < > intentionally omitted — Luau's -> arrow contains > which is not a bracket
+		else if (c === "\n" && depth === 0) break;
+		i++;
+	}
+	return i;
 }
 
 function findFunctionSignature(src: string, fnName: string) {
-    const esc = escapeRegExp(fnName);
-    const re = new RegExp(
-        `^([ \t]*)(?:local function ${esc}|local ${esc}\\s*=\\s*function|function ${esc})`,
-        "m",
-    );
-    const m = re.exec(src);
-    if (!m) return null;
-    const lineStart = m.index;
-    const headerEnd = m.index + m[0].length;
-    let i = headerEnd;
-    if (src[i] === "<") {
-        const c = findClosingAngle(src, i);
-        if (c === -1) return null;
-        i = c + 1;
-    }
-    if (src[i] !== "(") return null;
-    const openParen = i;
-    const closeParen = findClosingParen(src, openParen);
-    if (closeParen === -1) return null;
-    return {
-        lineStart,
-        headerEnd,
-        openParen,
-        closeParen,
-        sigEnd: findSignatureEnd(src, closeParen),
-    };
+	const esc = escapeRegExp(fnName);
+	const re = new RegExp(`^([ \t]*)(?:local function ${esc}|local ${esc}\\s*=\\s*function)`, "m");
+	const m = re.exec(src);
+	if (!m) return null;
+	const lineStart = m.index;
+	const headerEnd = m.index + m[0].length;
+	let i = headerEnd;
+	if (src[i] === "<") {
+		const c = findClosingAngle(src, i);
+		if (c === -1) return null;
+		i = c + 1;
+	}
+	if (src[i] !== "(") return null;
+	const openParen = i;
+	const closeParen = findClosingParen(src, openParen);
+	if (closeParen === -1) return null;
+	return {
+		lineStart,
+		headerEnd,
+		openParen,
+		closeParen,
+		sigEnd: findSignatureEnd(src, closeParen),
+	};
 }
 
 // ── Param splitting (bracket-aware, guards against -> arrows) ─────────────────
 
 function splitParams(paramStr: string): string[] {
-    if (!paramStr.trim()) return [];
-    const parts: string[] = [];
-    let depth = 0,
-        start = 0;
-    for (let i = 0; i < paramStr.length; i++) {
-        const c = paramStr[i];
-        if (c === "(" || c === "<" || c === "{" || c === "[") depth++;
-        else if (c === ")" || c === "}" || c === "]") depth--;
-        // Don't treat > in -> as a closing bracket
-        else if (c === ">" && (i === 0 || paramStr[i - 1] !== "-")) depth--;
-        else if (c === "," && depth === 0) {
-            parts.push(paramStr.slice(start, i).trim());
-            start = i + 1;
-        }
-    }
-    parts.push(paramStr.slice(start).trim());
-    return parts.filter(Boolean);
+	if (!paramStr.trim()) return [];
+	const parts: string[] = [];
+	let depth = 0,
+		start = 0;
+	for (let i = 0; i < paramStr.length; i++) {
+		const c = paramStr[i];
+		if (c === "(" || c === "<" || c === "{" || c === "[") depth++;
+		else if (c === ")" || c === "}" || c === "]") depth--;
+		// Don't treat > in -> as a closing bracket
+		else if (c === ">" && (i === 0 || paramStr[i - 1] !== "-")) depth--;
+		else if (c === "," && depth === 0) {
+			parts.push(paramStr.slice(start, i).trim());
+			start = i + 1;
+		}
+	}
+	parts.push(paramStr.slice(start).trim());
+	return parts.filter(Boolean);
 }
 
 function bareParamName(p: string): string {
-    if (p === "...") return "...";
-    const isRest = p.startsWith("...");
-    const stripped = isRest ? p.slice(3) : p;
-    const colonIdx = stripped.indexOf(":");
-    const name = (colonIdx === -1 ? stripped : stripped.slice(0, colonIdx)).trim();
-    return isRest ? `...${name}` : name;
+	if (p === "...") return "...";
+	const isRest = p.startsWith("...");
+	const stripped = isRest ? p.slice(3) : p;
+	const colonIdx = stripped.indexOf(":");
+	const name = (colonIdx === -1 ? stripped : stripped.slice(0, colonIdx)).trim();
+	return isRest ? `...${name}` : name;
 }
 
 // ── Cross-file type tracking ──────────────────────────────────────────────────
 
 /** Collect all Luau type names referenced in this manifest's function signatures. */
 function collectReferencedTypeNames(manifest: TypeManifest): Set<string> {
-    const refs = new Set<string>();
-    const scanType = (t: LuauType) => {
-        if (t.kind === "reference") {
-            // Only user-defined names (PascalCase, not _Lumine.*)
-            if (!t.name.startsWith("_Lumine.") && /^[A-Z]/.test(t.name)) refs.add(t.name);
-            t.args?.forEach(scanType);
-        } else if (t.kind === "optional") scanType(t.inner);
-        else if (t.kind === "union" || t.kind === "intersection") t.members.forEach(scanType);
-        else if (t.kind === "table") {
-            t.fields.forEach((f) => scanType(f.type));
-            if (t.indexer) {
-                scanType(t.indexer.key);
-                scanType(t.indexer.value);
-            }
-        } else if (t.kind === "function") {
-            t.params.forEach((p) => scanType(p.type));
-            scanType(t.returns);
-        } else if (t.kind === "tuple") t.elements.forEach(scanType);
-        else if (t.kind === "keyof") scanType(t.inner);
-    };
-    for (const sig of Object.values(manifest.functions)) {
-        sig.params.forEach((p) => scanType(p.type));
-        scanType(sig.returnType);
-    }
-    for (const decl of Object.values(manifest.types)) {
-        scanType(decl.body);
-        for (const typeParamDefault of decl.typeParamDefaults) {
-            if (typeParamDefault) scanType(typeParamDefault);
-        }
-    }
-    return refs;
+	const refs = new Set<string>();
+	const scanType = (t: LuauType) => {
+		if (t.kind === "reference") {
+			// Only user-defined names (PascalCase, not _Lumine.*)
+			if (!t.name.startsWith("_Lumine.") && /^[A-Z]/.test(t.name)) refs.add(t.name);
+			t.args?.forEach(scanType);
+		} else if (t.kind === "optional") scanType(t.inner);
+		else if (t.kind === "union" || t.kind === "intersection") t.members.forEach(scanType);
+		else if (t.kind === "table") {
+			t.fields.forEach((f) => scanType(f.type));
+			if (t.indexer) {
+				scanType(t.indexer.key);
+				scanType(t.indexer.value);
+			}
+		} else if (t.kind === "function") {
+			t.params.forEach((p) => scanType(p.type));
+			scanType(t.returns);
+		} else if (t.kind === "tuple") t.elements.forEach(scanType);
+		else if (t.kind === "keyof") scanType(t.inner);
+	};
+	for (const sig of Object.values(manifest.functions)) {
+		sig.params.forEach((p) => scanType(p.type));
+		scanType(sig.returnType);
+	}
+	return refs;
 }
 
 // ── Require helpers ───────────────────────────────────────────────────────────
 
 function buildLumineRequire(): string {
-    // Hardcoded: Lumine.lua always lives in the standard rbxts_include location
-    return `local _Lumine = require(game:GetService("ReplicatedStorage"):WaitForChild("rbxts_include"):WaitForChild("Lumine"))`;
+	// Hardcoded: Lumine.lua always lives in the standard rbxts_include location
+	return `local _Lumine = require(game:GetService("ReplicatedStorage"):WaitForChild("rbxts_include"):WaitForChild("Lumine"))`;
 }
 
 function buildModuleRequire(
-    rojoProject: string,
-    sourceLuauPath: string,
-    currentFilePath: string,
-    cwd: string,
+	rojoProject: string,
+	sourceLuauPath: string,
+	currentFilePath: string, // ← new param
+	cwd: string,
 ): string {
-    const resolution = resolveRojoPath(rojoProject, sourceLuauPath, cwd);
-    if (resolution) return buildDirectRequire(resolution);
-    return buildRelativeRequire(currentFilePath, sourceLuauPath);
+	const resolution = resolveRojoPath(rojoProject, sourceLuauPath, cwd);
+	if (resolution) return buildDirectRequire(resolution);
+	return buildRelativeRequire(currentFilePath, sourceLuauPath);
 }
 
 // ── Top-of-file injection (Bug #6: bracket-aware require scanning) ────────────
@@ -202,58 +193,58 @@ function buildModuleRequire(
  * require(game:GetService("X"):WaitForChild("Y"):WaitForChild("Z")).
  */
 function skipHeaderRegion(src: string, start: number): number {
-    let pos = start;
-    while (pos < src.length) {
-        const slice = src.slice(pos);
+	let pos = start;
+	while (pos < src.length) {
+		const slice = src.slice(pos);
 
-        // Blank line
-        if (/^\s*\n/.test(slice)) {
-            pos += slice.match(/^\s*\n/)![0].length;
-            continue;
-        }
+		// Blank line
+		if (/^\s*\n/.test(slice)) {
+			pos += slice.match(/^\s*\n/)![0].length;
+			continue;
+		}
 
-        // `local X = require(` — scan for matching )
-        const reqMatch = /^local [A-Za-z_][A-Za-z0-9_]* = require\(/.exec(slice);
-        if (reqMatch) {
-            let depth = 0,
-                i = reqMatch[0].length - 1; // start at the (
-            let found = false;
-            for (; i < slice.length; i++) {
-                if (slice[i] === "(") depth++;
-                else if (slice[i] === ")") {
-                    depth--;
-                    if (depth === 0) {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if (found) {
-                // consume to end of line
-                let j = i + 1;
-                while (j < slice.length && slice[j] === " ") j++;
-                if (j < slice.length && slice[j] === "\n") j++;
-                pos += j;
-                continue;
-            }
-        }
-        break;
-    }
-    return pos;
+		// `local X = require(` — scan for matching )
+		const reqMatch = /^local [A-Za-z_][A-Za-z0-9_]* = require\(/.exec(slice);
+		if (reqMatch) {
+			let depth = 0,
+				i = reqMatch[0].length - 1; // start at the (
+			let found = false;
+			for (; i < slice.length; i++) {
+				if (slice[i] === "(") depth++;
+				else if (slice[i] === ")") {
+					depth--;
+					if (depth === 0) {
+						found = true;
+						break;
+					}
+				}
+			}
+			if (found) {
+				// consume to end of line
+				let j = i + 1;
+				while (j < slice.length && slice[j] === " ") j++;
+				if (j < slice.length && slice[j] === "\n") j++;
+				pos += j;
+				continue;
+			}
+		}
+		break;
+	}
+	return pos;
 }
 
 function injectAtTop(src: string, block: string): string {
-    const banner = /^-- Compiled with roblox-ts[^\n]*\n/m.exec(src);
-    if (banner) {
-        const afterBanner = banner.index + banner[0].length;
-        const insertAt = skipHeaderRegion(src, afterBanner);
-        return src.slice(0, insertAt) + block + "\n" + src.slice(insertAt);
-    }
-    // --! lines (strict mode / luau flags)
-    if (/^--!.*\n/m.test(src)) {
-        return src.replace(/((?:^--!.*\n)+)/m, `$1${block}\n`);
-    }
-    return `${block}\n${src}`;
+	const banner = /^-- Compiled with roblox-ts[^\n]*\n/m.exec(src);
+	if (banner) {
+		const afterBanner = banner.index + banner[0].length;
+		const insertAt = skipHeaderRegion(src, afterBanner);
+		return src.slice(0, insertAt) + block + "\n" + src.slice(insertAt);
+	}
+	// --! lines (strict mode / luau flags)
+	if (/^--!.*\n/m.test(src)) {
+		return src.replace(/((?:^--!.*\n)+)/m, `$1${block}\n`);
+	}
+	return `${block}\n${src}`;
 }
 
 // ── Default type param filling ────────────────────────────────────────────────
@@ -266,129 +257,76 @@ function injectAtTop(src: string, block: string): string {
  * Looks up by base name after stripping any `_Types_xxx.` qualifier so this
  * works correctly on already-remapped cross-file references.
  */
-function fillTypeParamDefaults(
-    t: LuauType,
-    globalDecls: Map<string, TypeDecl>,
-    globalOrigins?: Map<string, string>,
-): LuauType {
-    switch (t.kind) {
-        case "reference": {
-            const filledArgs = t.args?.map((a) =>
-                fillTypeParamDefaults(a, globalDecls, globalOrigins),
-            );
-            // Strip module qualifier to get the bare type name for lookup
-            const dot = t.name.lastIndexOf(".");
-            const baseName = dot !== -1 ? t.name.slice(dot + 1) : t.name;
-            // The qualifier prefix of this reference (e.g. "_Types_9aa91235.")
-            const qualifier = dot !== -1 ? t.name.slice(0, dot + 1) : "";
-            const decl = globalDecls.get(baseName);
-            if (decl && decl.typeParamDefaults.length > 0) {
-                const provided = filledArgs?.length ?? 0;
-                const needed = decl.typeParams.length;
-                if (provided < needed) {
-                    const extra: LuauType[] = [];
-                    for (let i = provided; i < needed; i++) {
-                        const rawDefault = decl.typeParamDefaults[i] ?? LuauAny;
-                        // Defaults are stored as bare refs from the origin file — when the
-                        // parent type is a cross-file qualified ref, apply the same qualifier
-                        // to any bare external names in the default so they resolve correctly.
-                        extra.push(
-                            qualifier && globalOrigins
-                                ? qualifyBareRefs(rawDefault, qualifier, globalOrigins)
-                                : rawDefault,
-                        );
-                    }
-                    return {
-                        kind: "reference",
-                        name: t.name,
-                        args: [...(filledArgs ?? []), ...extra],
-                    };
-                }
-            }
-            return { kind: "reference", name: t.name, args: filledArgs };
-        }
-        case "optional":
-            return {
-                kind: "optional",
-                inner: fillTypeParamDefaults(t.inner, globalDecls, globalOrigins),
-            };
-        case "union":
-            return {
-                kind: "union",
-                members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls, globalOrigins)),
-            };
-        case "intersection":
-            return {
-                kind: "intersection",
-                members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls, globalOrigins)),
-            };
-        case "table":
-            return {
-                kind: "table",
-                fields: t.fields.map((f) => ({
-                    ...f,
-                    type: fillTypeParamDefaults(f.type, globalDecls, globalOrigins),
-                })),
-                indexer: t.indexer
-                    ? {
-                        key: fillTypeParamDefaults(t.indexer.key, globalDecls, globalOrigins),
-                        value: fillTypeParamDefaults(
-                            t.indexer.value,
-                            globalDecls,
-                            globalOrigins,
-                        ),
-                    }
-                    : undefined,
-            };
-        case "function":
-            return {
-                kind: "function",
-                params: t.params.map((p) => ({
-                    ...p,
-                    type: fillTypeParamDefaults(p.type, globalDecls, globalOrigins),
-                })),
-                returns: fillTypeParamDefaults(t.returns, globalDecls, globalOrigins),
-            };
-        case "tuple":
-            return {
-                kind: "tuple",
-                elements: t.elements.map((e) =>
-                    fillTypeParamDefaults(e, globalDecls, globalOrigins),
-                ),
-            };
-        case "keyof":
-            return {
-                kind: "keyof",
-                inner: fillTypeParamDefaults(t.inner, globalDecls, globalOrigins),
-            };
-        default:
-            return t;
-    }
-}
-
-function remapTypeDecls(
-    manifest: TypeManifest,
-    aliases: Map<string, string>,
-    globalDecls: Map<string, TypeDecl>,
-): TypeManifest {
-    const types: TypeManifest["types"] = {};
-
-    for (const [key, decl] of Object.entries(manifest.types)) {
-        types[key] = {
-            ...decl,
-            typeParamDefaults: decl.typeParamDefaults.map((typeParamDefault) =>
-                typeParamDefault
-                    ? fillTypeParamDefaults(remapType(typeParamDefault, aliases), globalDecls)
-                    : undefined,
-            ),
-            body: fillTypeParamDefaults(remapType(decl.body, aliases), globalDecls),
-        };
-    }
-
-    return {
-        ...manifest,
-        types,
-    };
+function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>): LuauType {
+	switch (t.kind) {
+		case "reference": {
+			const filledArgs = t.args?.map((a) => fillTypeParamDefaults(a, globalDecls));
+			// Strip module qualifier to get the bare type name for lookup
+			const dot = t.name.lastIndexOf(".");
+			const baseName = dot !== -1 ? t.name.slice(dot + 1) : t.name;
+			const decl = globalDecls.get(baseName);
+			if (decl && decl.typeParamDefaults.length > 0) {
+				const provided = filledArgs?.length ?? 0;
+				const needed = decl.typeParams.length;
+				if (provided < needed) {
+					const extra: LuauType[] = [];
+					for (let i = provided; i < needed; i++) {
+						extra.push(decl.typeParamDefaults[i] ?? LuauAny);
+					}
+					return {
+						kind: "reference",
+						name: t.name,
+						args: [...(filledArgs ?? []), ...extra],
+					};
+				}
+			}
+			return { kind: "reference", name: t.name, args: filledArgs };
+		}
+		case "optional":
+			return { kind: "optional", inner: fillTypeParamDefaults(t.inner, globalDecls) };
+		case "union":
+			return {
+				kind: "union",
+				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls)),
+			};
+		case "intersection":
+			return {
+				kind: "intersection",
+				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls)),
+			};
+		case "table":
+			return {
+				kind: "table",
+				fields: t.fields.map((f) => ({
+					...f,
+					type: fillTypeParamDefaults(f.type, globalDecls),
+				})),
+				indexer: t.indexer
+					? {
+							key: fillTypeParamDefaults(t.indexer.key, globalDecls),
+							value: fillTypeParamDefaults(t.indexer.value, globalDecls),
+						}
+					: undefined,
+			};
+		case "function":
+			return {
+				kind: "function",
+				params: t.params.map((p) => ({
+					...p,
+					type: fillTypeParamDefaults(p.type, globalDecls),
+				})),
+				returns: fillTypeParamDefaults(t.returns, globalDecls),
+			};
+		case "tuple":
+			return {
+				kind: "tuple",
+				elements: t.elements.map((e) => fillTypeParamDefaults(e, globalDecls)),
+			};
+		case "keyof":
+			return { kind: "keyof", inner: fillTypeParamDefaults(t.inner, globalDecls) };
+		default:
+			return t;
+	}
 }
 
 // ── Main annotateFile ─────────────────────────────────────────────────────────
@@ -396,179 +334,180 @@ function remapTypeDecls(
 const INLINE_SENTINEL = "-- [lumine types]";
 
 export function annotateFile(
-    source: string,
-    filePath: string,
-    manifest: TypeManifest,
-    rojoProject: string,
-    cwd: string,
-    globalTypeOrigins: Map<string, string> = new Map(),
-    globalTypeDecls: Map<string, TypeDecl> = new Map(),
+	source: string,
+	filePath: string,
+	manifest: TypeManifest,
+	rojoProject: string,
+	lumineFilePath: string,
+	cwd: string,
+	globalTypeOrigins: Map<string, string> = new Map(),
+	globalTypeDecls: Map<string, TypeDecl> = new Map(),
 ): AnnotationResult & { source: string } {
-    let annotated = 0;
-    let skipped = 0;
-    let usesBuiltins = false;
-    let result = source;
+	const knownTypes = new Set(Object.keys(manifest.types));
+	let annotated = 0;
+	let skipped = 0;
+	let usesBuiltins = false;
+	let result = source;
 
-    const filePathAbs = resolve(filePath);
-    const ownTypeNames = new Set(Object.values(manifest.types).map((d) => d.name));
+	const filePathAbs = resolve(filePath);
+	const ownTypeNames = new Set(Object.values(manifest.types).map((d) => d.name));
 
-    // ── Build cross-file require groups ────────────────────────────────────────
-    // Bug #5 fix: we ALWAYS recompute these from the current manifest, even
-    // if the sentinel is present. The sentinel only guards against re-injecting
-    // the WHOLE block; individual requires are re-evaluated each run.
-    const referenced = collectReferencedTypeNames(manifest);
-    const requireGroups = new Map<string, { localVar: string; typeNames: string[] }>();
-    const typeAliasMap = new Map<string, string>(); // typeName → _Types_uuid.typeName
+	// ── Build cross-file require groups ────────────────────────────────────────
+	// Bug #5 fix: we ALWAYS recompute these from the current manifest, even
+	// if the sentinel is present. The sentinel only guards against re-injecting
+	// the WHOLE block; individual requires are re-evaluated each run.
+	const referenced = collectReferencedTypeNames(manifest);
+	const requireGroups = new Map<string, { localVar: string; typeNames: string[] }>();
+	const typeAliasMap = new Map<string, string>(); // typeName → _Types_uuid.typeName
 
-    for (const name of referenced) {
-        if (ownTypeNames.has(name)) continue;
-        const origin = globalTypeOrigins.get(name);
-        if (!origin || resolve(origin) === filePathAbs) continue;
+	for (const name of referenced) {
+		if (ownTypeNames.has(name)) continue;
+		const origin = globalTypeOrigins.get(name);
+		if (!origin || resolve(origin) === filePathAbs) continue;
 
-        let group = requireGroups.get(origin);
-        if (!group) {
-            const uid = randomUUID().replace(/-/g, "").slice(0, 8);
-            group = { localVar: `_Types_${uid}`, typeNames: [] };
-            requireGroups.set(origin, group);
-        }
-        if (!group.typeNames.includes(name)) group.typeNames.push(name);
-        typeAliasMap.set(name, `${group.localVar}.${name}`);
-    }
+		let group = requireGroups.get(origin);
+		if (!group) {
+			const uid = randomUUID().replace(/-/g, "").slice(0, 8);
+			group = { localVar: `_Types_${uid}`, typeNames: [] };
+			requireGroups.set(origin, group);
+		}
+		if (!group.typeNames.includes(name)) group.typeNames.push(name);
+		typeAliasMap.set(name, `${group.localVar}.${name}`);
+	}
 
-    // ── Annotate function signatures ───────────────────────────────────────────
-    for (const [fnName, sig] of Object.entries(manifest.functions)) {
-        const loc = findFunctionSignature(result, fnName);
-        if (!loc) {
-            skipped++;
-            continue;
-        }
+	// ── Annotate function signatures ───────────────────────────────────────────
+	for (const [fnName, sig] of Object.entries(manifest.functions)) {
+		const loc = findFunctionSignature(result, fnName);
+		if (!loc) {
+			skipped++;
+			continue;
+		}
 
-        const { lineStart, headerEnd, openParen, closeParen, sigEnd } = loc;
-        const rawParams = splitParams(result.slice(openParen + 1, closeParen));
-        const paramNames = rawParams.map(bareParamName);
+		const { lineStart, headerEnd, openParen, closeParen, sigEnd } = loc;
+		const rawParams = splitParams(result.slice(openParen + 1, closeParen));
+		const paramNames = rawParams.map(bareParamName);
 
-        if (paramNames.length !== sig.params.length) {
-            skipped++;
-            continue;
-        }
+		if (paramNames.length !== sig.params.length) {
+			skipped++;
+			continue;
+		}
 
-        // Build annotated parameter strings from AST types (no string conversion!)
-        const annotatedParams = sig.params.map((param, i) => {
-            const rawName = paramNames[i] ?? param.name;
-            const isRest = rawName.startsWith("...");
-            const cleanName = rawName.replace(/^\.\.\./, "") || param.name;
+		// Build annotated parameter strings from AST types (no string conversion!)
+		const annotatedParams = sig.params.map((param, i) => {
+			const rawName = paramNames[i] ?? param.name;
+			const isRest = rawName.startsWith("...");
+			const cleanName = rawName.replace(/^\.\.\./, "") || param.name;
 
-            // Remap cross-file references, then fill in any missing default type args
-            const remapped = fillTypeParamDefaults(
-                remapType(param.type, typeAliasMap),
-                globalTypeDecls,
-                globalTypeOrigins,
-            );
-            if (typeUsesBuiltins(remapped)) usesBuiltins = true;
+			// Remap cross-file references, then fill in any missing default type args
+			const remapped = fillTypeParamDefaults(
+				remapType(param.type, typeAliasMap),
+				globalTypeDecls,
+			);
+			if (typeUsesBuiltins(remapped)) usesBuiltins = true;
 
-            return printParam(cleanName, remapped, param.optional, param.rest || isRest);
-        });
+			return printParam(cleanName, remapped, param.optional, param.rest || isRest);
+		});
 
-        const remappedReturn = fillTypeParamDefaults(
-            remapType(sig.returnType, typeAliasMap),
-            globalTypeDecls,
-            globalTypeOrigins,
-        );
-        if (typeUsesBuiltins(remappedReturn)) usesBuiltins = true;
-        const returnAnnotation = printReturn(remappedReturn);
+		const remappedReturn = fillTypeParamDefaults(
+			remapType(sig.returnType, typeAliasMap),
+			globalTypeDecls,
+		);
+		if (typeUsesBuiltins(remappedReturn)) usesBuiltins = true;
+		const returnAnnotation = printReturn(remappedReturn);
 
-        const typeParamStr = sig.typeParams.length ? `<${sig.typeParams.join(", ")}>` : "";
-        let headerBase = result.slice(lineStart, headerEnd).trimEnd();
-        if (headerBase.endsWith(">")) {
-            const lastOpen = headerBase.lastIndexOf("<");
-            if (lastOpen !== -1) headerBase = headerBase.slice(0, lastOpen).trimEnd();
-        }
+		const typeParamStr = sig.typeParams.length ? `<${sig.typeParams.join(", ")}>` : "";
+		let headerBase = result.slice(lineStart, headerEnd).trimEnd();
+		if (headerBase.endsWith(">")) {
+			const lastOpen = headerBase.lastIndexOf("<");
+			if (lastOpen !== -1) headerBase = headerBase.slice(0, lastOpen).trimEnd();
+		}
 
-        result =
-            result.slice(0, lineStart) +
-            `${headerBase}${typeParamStr}(${annotatedParams.join(", ")})${returnAnnotation}` +
-            result.slice(sigEnd);
-        annotated++; // Bug #4 fix: only increment for actual function annotations
-    }
+		result =
+			result.slice(0, lineStart) +
+			`${headerBase}${typeParamStr}(${annotatedParams.join(", ")})${returnAnnotation}` +
+			result.slice(sigEnd);
+		annotated++; // Bug #4 fix: only increment for actual function annotations
+	}
 
-    // ── Inject [lumine types] block ────────────────────────────────────────────
-    // Bug #5 fix: remove old sentinel block entirely and re-inject fresh.
-    // This means cross-file requires are always up to date.
-    //
-    // Bug #7: own-file `export type` declarations are NO LONGER injected here.
-    // They now live exclusively in _lumine_types.luau (generated by dirs.ts).
-    // We only inject: _Lumine require (if builtins used) + cross-dir _Types_xxx requires.
-    result = stripOldLumineBlock(result);
+	// ── Inject [lumine types] block ────────────────────────────────────────────
+	// Bug #5 fix: remove old sentinel block entirely and re-inject fresh.
+	// This means cross-file requires are always up to date.
+	result = stripOldLumineBlock(result);
 
-    const needsLumine = usesBuiltins && !result.includes("local _Lumine =");
-    const hasAnything = needsLumine || requireGroups.size > 0;
+	const ownDecls = generateInlineTypeDecls(manifest);
+	const needsLumine = usesBuiltins && !result.includes("local _Lumine =");
+	const hasAnything = needsLumine || requireGroups.size > 0 || ownDecls.length > 0;
 
-    if (hasAnything) {
-        const lines: string[] = [INLINE_SENTINEL];
+	if (hasAnything) {
+		const lines: string[] = [INLINE_SENTINEL];
 
-        if (needsLumine) {
-            // Re-use an existing Lumine var if rbxtsc already emitted one
-            const existingLumine = result.match(/^local Lumine = [^\n]+/m);
-            lines.push(existingLumine ? "local _Lumine = Lumine" : buildLumineRequire());
-        }
+		if (needsLumine) {
+			// Re-use an existing Lumine var if rbxtsc already emitted one
+			const existingLumine = result.match(/^local Lumine = [^\n]+/m);
+			lines.push(existingLumine ? "local _Lumine = Lumine" : buildLumineRequire());
+		}
 
-        for (const [sourcePath, group] of requireGroups) {
-            lines.push(
-                `local ${group.localVar} = ${buildModuleRequire(rojoProject, sourcePath, filePath, cwd)}`,
-            );
-        }
+		for (const [sourcePath, group] of requireGroups) {
+			lines.push(
+				`local ${group.localVar} = ${buildModuleRequire(rojoProject, sourcePath, filePath, cwd)}`,
+			);
+		}
 
-        if (needsLumine || requireGroups.size > 0) lines.push("");
+		if (needsLumine || requireGroups.size > 0) lines.push("");
 
-        result = injectAtTop(result, lines.join("\n"));
-        // Note: we do NOT increment `annotated` here (Bug #4 fix)
-    }
+		if (ownDecls.length > 0) {
+			lines.push(ownDecls);
+			lines.push("");
+		}
 
-    return { filePath, annotated, skipped, usesBuiltins, source: result };
+		result = injectAtTop(result, lines.join("\n"));
+		// Note: we do NOT increment `annotated` here (Bug #4 fix)
+	}
+
+	return { filePath, annotated, skipped, usesBuiltins, source: result };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Remove the entire [lumine types] block if present, so we can re-inject fresh. */
 function stripOldLumineBlock(src: string): string {
-    const start = src.indexOf("-- [lumine types]");
-    if (start === -1) return src;
+	const start = src.indexOf("-- [lumine types]");
+	if (start === -1) return src;
 
-    let i = start;
-    while (i < src.length && src[i] !== "\n") i++; // skip sentinel line
-    if (i < src.length) i++; // skip the \n
+	let i = start;
+	while (i < src.length && src[i] !== "\n") i++; // skip sentinel line
+	if (i < src.length) i++; // skip the \n
 
-    let braceDepth = 0;
+	let braceDepth = 0;
 
-    while (i < src.length) {
-        const lineStart = i;
-        let lineEnd = src.indexOf("\n", i);
-        if (lineEnd === -1) lineEnd = src.length;
-        const line = src.slice(lineStart, lineEnd).trim();
+	while (i < src.length) {
+		const lineStart = i;
+		let lineEnd = src.indexOf("\n", i);
+		if (lineEnd === -1) lineEnd = src.length;
+		const line = src.slice(lineStart, lineEnd).trim();
 
-        const wasInside = braceDepth > 0;
-        for (const ch of line) {
-            if (ch === "{") braceDepth++;
-            else if (ch === "}") braceDepth--;
-        }
+		const wasInside = braceDepth > 0;
+		for (const ch of line) {
+			if (ch === "{") braceDepth++;
+			else if (ch === "}") braceDepth--;
+		}
 
-        // Lines inside a multi-line type body are always part of the lumine block,
-        // even if they don't match any keyword (e.g. "    a: number,").
-        const isLumineContent =
-            wasInside ||
-            line === "" ||
-            line.startsWith("local _Lumine") ||
-            line.startsWith("local _Types_") ||
-            line.startsWith("local _Shared_") ||
-            line.startsWith("local Lumine =") ||
-            line.startsWith("export type ") ||
-            line.startsWith("-- [lumine]");
+		// Lines inside a multi-line type body are always part of the lumine block,
+		// even if they don't match any keyword (e.g. "    a: number,").
+		const isLumineContent =
+			wasInside ||
+			line === "" ||
+			line.startsWith("local _Lumine") ||
+			line.startsWith("local _Types_") ||
+			line.startsWith("local Lumine =") ||
+			line.startsWith("export type ") ||
+			line.startsWith("-- [lumine]");
 
-        if (!isLumineContent) break;
-        i = lineEnd + 1;
-    }
+		if (!isLumineContent) break;
+		i = lineEnd + 1;
+	}
 
-    return src.slice(0, start) + src.slice(i);
+	return src.slice(0, start) + src.slice(i);
 }
 
 /**
@@ -576,112 +515,43 @@ function stripOldLumineBlock(src: string): string {
  * map (cross-file types) with their qualified form (_Types_uuid.TypeName).
  */
 function remapType(t: LuauType, aliases: Map<string, string>): LuauType {
-    switch (t.kind) {
-        case "reference": {
-            const aliased = aliases.get(t.name);
-            const name = aliased ?? t.name;
-            const args = t.args?.map((a) => remapType(a, aliases));
-            return { kind: "reference", name, args };
-        }
-        case "optional":
-            return { kind: "optional", inner: remapType(t.inner, aliases) };
-        case "union":
-            return { kind: "union", members: t.members.map((m) => remapType(m, aliases)) };
-        case "intersection":
-            return { kind: "intersection", members: t.members.map((m) => remapType(m, aliases)) };
-        case "table":
-            return {
-                kind: "table",
-                fields: t.fields.map((f) => ({ ...f, type: remapType(f.type, aliases) })),
-                indexer: t.indexer
-                    ? {
-                        key: remapType(t.indexer.key, aliases),
-                        value: remapType(t.indexer.value, aliases),
-                    }
-                    : undefined,
-            };
-        case "function":
-            return {
-                kind: "function",
-                params: t.params.map((p) => ({ ...p, type: remapType(p.type, aliases) })),
-                returns: remapType(t.returns, aliases),
-            };
-        case "tuple":
-            return { kind: "tuple", elements: t.elements.map((e) => remapType(e, aliases)) };
-        case "keyof":
-            return { kind: "keyof", inner: remapType(t.inner, aliases) };
-        default:
-            return t;
-    }
-}
-
-/**
- * Walk a LuauType and prefix any bare PascalCase reference names that exist in
- * globalOrigins with the given qualifier (e.g. "_Types_9aa91235.").
- *
- * Used to fix up default type arguments that were stored as bare names from
- * their origin file but need module qualification in the consumer file.
- * Only qualifies names that are known external types (present in globalOrigins)
- * so generic type params (T, K, V) are left untouched.
- */
-function qualifyBareRefs(
-    t: LuauType,
-    qualifier: string,
-    globalOrigins: Map<string, string>,
-): LuauType {
-    switch (t.kind) {
-        case "reference": {
-            const shouldQualify =
-                !t.name.includes(".") && /^[A-Z]/.test(t.name) && globalOrigins.has(t.name);
-            const name = shouldQualify ? `${qualifier}${t.name}` : t.name;
-            const args = t.args?.map((a) => qualifyBareRefs(a, qualifier, globalOrigins));
-            return { kind: "reference", name, args };
-        }
-        case "optional":
-            return { kind: "optional", inner: qualifyBareRefs(t.inner, qualifier, globalOrigins) };
-        case "union":
-            return {
-                kind: "union",
-                members: t.members.map((m) => qualifyBareRefs(m, qualifier, globalOrigins)),
-            };
-        case "intersection":
-            return {
-                kind: "intersection",
-                members: t.members.map((m) => qualifyBareRefs(m, qualifier, globalOrigins)),
-            };
-        case "table":
-            return {
-                kind: "table",
-                fields: t.fields.map((f) => ({
-                    ...f,
-                    type: qualifyBareRefs(f.type, qualifier, globalOrigins),
-                })),
-                indexer: t.indexer
-                    ? {
-                        key: qualifyBareRefs(t.indexer.key, qualifier, globalOrigins),
-                        value: qualifyBareRefs(t.indexer.value, qualifier, globalOrigins),
-                    }
-                    : undefined,
-            };
-        case "function":
-            return {
-                kind: "function",
-                params: t.params.map((p) => ({
-                    ...p,
-                    type: qualifyBareRefs(p.type, qualifier, globalOrigins),
-                })),
-                returns: qualifyBareRefs(t.returns, qualifier, globalOrigins),
-            };
-        case "tuple":
-            return {
-                kind: "tuple",
-                elements: t.elements.map((e) => qualifyBareRefs(e, qualifier, globalOrigins)),
-            };
-        case "keyof":
-            return { kind: "keyof", inner: qualifyBareRefs(t.inner, qualifier, globalOrigins) };
-        default:
-            return t;
-    }
+	switch (t.kind) {
+		case "reference": {
+			const aliased = aliases.get(t.name);
+			const name = aliased ?? t.name;
+			const args = t.args?.map((a) => remapType(a, aliases));
+			return { kind: "reference", name, args };
+		}
+		case "optional":
+			return { kind: "optional", inner: remapType(t.inner, aliases) };
+		case "union":
+			return { kind: "union", members: t.members.map((m) => remapType(m, aliases)) };
+		case "intersection":
+			return { kind: "intersection", members: t.members.map((m) => remapType(m, aliases)) };
+		case "table":
+			return {
+				kind: "table",
+				fields: t.fields.map((f) => ({ ...f, type: remapType(f.type, aliases) })),
+				indexer: t.indexer
+					? {
+							key: remapType(t.indexer.key, aliases),
+							value: remapType(t.indexer.value, aliases),
+						}
+					: undefined,
+			};
+		case "function":
+			return {
+				kind: "function",
+				params: t.params.map((p) => ({ ...p, type: remapType(p.type, aliases) })),
+				returns: remapType(t.returns, aliases),
+			};
+		case "tuple":
+			return { kind: "tuple", elements: t.elements.map((e) => remapType(e, aliases)) };
+		case "keyof":
+			return { kind: "keyof", inner: remapType(t.inner, aliases) };
+		default:
+			return t;
+	}
 }
 ```
 
@@ -697,10 +567,6 @@ export const LUMINE_BUILTIN_NAMES = new Set([
     "Pick",
     "Omit",
     "Parameters",
-    "NoInfer",
-    "Awaited",
-    "Extract",
-    "Exclude",
     "Promise", // roblox-ts Promise -- typed structural definition emitted in generated.types.luau
 ]);
 
@@ -843,112 +709,6 @@ export type function Omit(T, K)
     return result
 end
 
--- NoInfer<T>: TypeScript inference hint — no Luau equivalent, transparent identity
-export type function NoInfer(T)
-    return T
-end
-
--- Awaited<T>: unwrap Promise<X> → X by reading the return type of the "expect" method
--- Promise<T> defines: expect: (self: Promise<T>) -> T
-export type function Awaited(T)
-    if not T:is("table") then return T end
-    for key, prop in T:properties() do
-        if key:is("singleton") and key:value() == "expect" and prop.read then
-            local fn = prop.read
-            if fn:is("function") then
-                local rets = fn:returns()
-                if rets.head and #rets.head >= 1 then
-                    return rets.head[1]
-                end
-            end
-        end
-    end
-    return T
-end
-
--- Extract<T, U>: from union T keep only members structurally assignable to U
--- Uses structural kind matching (types.issubtype is not in the released API).
-export type function Extract(T, U)
-    local function assignableTo(src, target)
-        if target:is("unknown") or target:is("any") then return true end
-        if src:is("never") or src:is("any") then return true end
-        for _, kind in {"boolean", "number", "string", "nil", "thread", "buffer"} do
-            if src:is(kind) and target:is(kind) then return true end
-        end
-        if src:is("singleton") then
-            local v = src:value()
-            if type(v) == "string" and target:is("string") then return true end
-            if type(v) == "boolean" and target:is("boolean") then return true end
-            if type(v) == "number" and target:is("number") then return true end
-            if target:is("singleton") then return v == target:value() end
-            return false
-        end
-        if src:is("table") and target:is("table") then return true end
-        if src:is("function") and target:is("function") then return true end
-        if target:is("union") then
-            for _, comp in target:components() do
-                if assignableTo(src, comp) then return true end
-            end
-            return false
-        end
-        return false
-    end
-    if not T:is("union") then
-        if assignableTo(T, U) then return T end
-        return types.never
-    end
-    local kept = {}
-    for _, component in T:components() do
-        if assignableTo(component, U) then
-            table.insert(kept, component)
-        end
-    end
-    if #kept == 0 then return types.never end
-    if #kept == 1 then return kept[1] end
-    return types.unionof(table.unpack(kept))
-end
-
--- Exclude<T, U>: from union T remove members structurally assignable to U
-export type function Exclude(T, U)
-    local function assignableTo(src, target)
-        if target:is("unknown") or target:is("any") then return true end
-        if src:is("never") or src:is("any") then return true end
-        for _, kind in {"boolean", "number", "string", "nil", "thread", "buffer"} do
-            if src:is(kind) and target:is(kind) then return true end
-        end
-        if src:is("singleton") then
-            local v = src:value()
-            if type(v) == "string" and target:is("string") then return true end
-            if type(v) == "boolean" and target:is("boolean") then return true end
-            if type(v) == "number" and target:is("number") then return true end
-            if target:is("singleton") then return v == target:value() end
-            return false
-        end
-        if src:is("table") and target:is("table") then return true end
-        if src:is("function") and target:is("function") then return true end
-        if target:is("union") then
-            for _, comp in target:components() do
-                if assignableTo(src, comp) then return true end
-            end
-            return false
-        end
-        return false
-    end
-    if not T:is("union") then
-        if assignableTo(T, U) then return types.never end
-        return T
-    end
-    local kept = {}
-    for _, component in T:components() do
-        if not assignableTo(component, U) then
-            table.insert(kept, component)
-        end
-    end
-    if #kept == 0 then return types.never end
-    if #kept == 1 then return kept[1] end
-    return types.unionof(table.unpack(kept))
-end
-
 -- Promise: structural type for the roblox-ts / evaera Promise runtime.
 -- andThen/catch/etc return Promise<any> because Luau table types do not support
 -- per-method generic parameters; callers that need exact types can cast locally.
@@ -987,86 +747,82 @@ export type Promise<T> = {
 
 ### package/src/config.ts
 ```ts
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import type { LumineConfig } from "./types";
 
 interface TsConfig {
-	compilerOptions?: {
-		outDir?: string;
-		rootDir?: string;
-		declaration?: boolean;
-	};
+    compilerOptions?: {
+        outDir?: string;
+        rootDir?: string;
+        declaration?: boolean;
+    };
 }
 
 interface LumineToml {
-	includeDir?: string;
+    includeDir?: string;
 }
 
 function parseTsConfig(cwd: string): TsConfig {
-	const path = join(cwd, "tsconfig.json");
-	if (!existsSync(path)) {
-		console.error("[lumine] error: tsconfig.json not found");
-		process.exit(1);
-	}
-	const raw = readFileSync(path, "utf-8");
-	const stripped = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
-	return JSON.parse(stripped) as TsConfig;
+    const path = join(cwd, "tsconfig.json");
+    if (!existsSync(path)) {
+        console.error("[lumine] error: tsconfig.json not found");
+        process.exit(1);
+    }
+    const raw = readFileSync(path, "utf-8");
+    const stripped = raw.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    return JSON.parse(stripped) as TsConfig;
 }
 
 function parseLumineToml(cwd: string): LumineToml {
-	const path = join(cwd, "lumine.toml");
-	if (!existsSync(path)) return {};
-	const raw = readFileSync(path, "utf-8");
-	const result: LumineToml = {};
-	for (const line of raw.split("\n")) {
-		const match = line.match(/^\s*(\w+)\s*=\s*"([^"]+)"/);
-		if (match) {
-			const [, key, value] = match;
-			if (key === "includeDir") result.includeDir = value;
-		}
-	}
-	return result;
+    const path = join(cwd, "lumine.toml");
+    if (!existsSync(path)) return {};
+    const raw = readFileSync(path, "utf-8");
+    const result: LumineToml = {};
+    for (const line of raw.split("\n")) {
+        const match = line.match(/^\s*(\w+)\s*=\s*"([^"]+)"/);
+        if (match) {
+            const [, key, value] = match;
+            if (key === "includeDir") result.includeDir = value;
+        }
+    }
+    return result;
 }
 
 function findRojoProject(cwd: string): string {
-	const defaultPath = join(cwd, "default.project.json");
-	if (existsSync(defaultPath)) return defaultPath;
-
-	try {
-		const found = readdirSync(cwd).find(
-			(f) => f.endsWith(".project.json") && f !== "default.project.json",
-		);
-		if (found) return join(cwd, found);
-	} catch {
-		/* ignore */
-	}
-
-	return "";
+    for (const name of ["default.project.json"]) {
+        const path = join(cwd, name);
+        if (existsSync(path)) return path;
+    }
+    return join(cwd, "default.project.json");
 }
 
 export function loadConfig(cwd: string = process.cwd()): LumineConfig {
-	const tsconfig = parseTsConfig(cwd);
-	const lumine = parseLumineToml(cwd);
-	const opts = tsconfig.compilerOptions ?? {};
+    const tsconfig = parseTsConfig(cwd);
+    const lumine = parseLumineToml(cwd);
+    const opts = tsconfig.compilerOptions ?? {};
 
-	const outDir = resolve(cwd, opts.outDir ?? "out");
-	const rootDir = resolve(cwd, opts.rootDir ?? "src");
-	const declaration = opts.declaration ?? false;
-	const rojoProject = findRojoProject(cwd);
+    const outDir = resolve(cwd, opts.outDir ?? "out");
+    const rootDir = resolve(cwd, opts.rootDir ?? "src");
+    const declaration = opts.declaration ?? false;
+    const rojoProject = findRojoProject(cwd);
 
-	const includeDir = lumine.includeDir
-		? resolve(cwd, lumine.includeDir)
-		: resolve(outDir, "..", "include");
+    // includeDir: where Lumine.lua lives alongside RuntimeLib and Promise.
+    // Default: sibling "include" folder next to outDir (roblox-ts convention:
+    //   rbxtsc -o out  →  out/src/*.luau  +  out/include/RuntimeLib.lua)
+    // Override in lumine.toml:  includeDir = "out/include"
+    const includeDir = lumine.includeDir
+        ? resolve(cwd, lumine.includeDir)
+        : resolve(outDir, "..", "include");
 
-	if (!declaration) {
-		console.warn(
-			`[lumine] warning: no "declaration": true in tsconfig.json\n` +
-				`  running in fallback mode — some types will be inferred as any`,
-		);
-	}
+    if (!declaration) {
+        console.warn(
+            `[lumine] warning: no "declaration": true in tsconfig.json\n` +
+            `  running in fallback mode — some types will be inferred as any`,
+        );
+    }
 
-	return { outDir, rootDir, declaration, includeDir, rojoProject };
+    return { outDir, rootDir, declaration, includeDir, rojoProject };
 }
 ```
 
@@ -1564,236 +1320,20 @@ export function convertReturn(
 }
 ```
 
-### package/src/dirs.ts
-```ts
-/**
- * dirs.ts
- *
- * Per-directory type aggregation.  For each output directory that contains
- * typed .luau files, generates a single `_lumine_types.luau` that re-declares
- * every exported type from every file in that directory.
- *
- * Types within the same directory reference each other by bare name (they all
- * live in the same file, so Luau resolves them locally — no require needed).
- * Types from other directories are accessed via `local _Types_xxx = require(…)`
- * pointing at that directory's own `_lumine_types.luau`.
- *
- * This cleanly breaks every cross-file require cycle: `_lumine_types.luau`
- * never requires any individual source file from its own directory.
- */
-import { createHash } from "crypto";
-import { join, relative, dirname, basename } from "path";
-import type { TypeDecl } from "./types";
-import { mkRef, type LuauType } from "./luau-types";
-import { isBarelyRecursive, emitTypeBody } from "./emit";
-import { resolveRojoPath, buildDirectRequire, buildRelativeRequire } from "./rojo";
-
-// ── LuauType ref scanner ──────────────────────────────────────────────────────
-
-function collectRefs(t: LuauType, out: Set<string>): void {
-	switch (t.kind) {
-		case "reference":
-			if (!t.name.startsWith("_Lumine.") && /^[A-Z]/.test(t.name)) out.add(t.name);
-			t.args?.forEach((a) => collectRefs(a, out));
-			break;
-		case "optional": collectRefs(t.inner, out); break;
-		case "union":
-		case "intersection": t.members.forEach((m) => collectRefs(m, out)); break;
-		case "table":
-			t.fields.forEach((f) => collectRefs(f.type, out));
-			if (t.indexer) { collectRefs(t.indexer.key, out); collectRefs(t.indexer.value, out); }
-			break;
-		case "function":
-			t.params.forEach((p) => collectRefs(p.type, out));
-			collectRefs(t.returns, out);
-			break;
-		case "tuple": t.elements.forEach((e) => collectRefs(e, out)); break;
-		case "keyof": collectRefs(t.inner, out); break;
-	}
-}
-
-// ── LuauType ref remapper ─────────────────────────────────────────────────────
-
-function remapRefs(t: LuauType, aliases: Map<string, string>): LuauType {
-	switch (t.kind) {
-		case "reference": {
-			const aliased = aliases.get(t.name);
-			const name = aliased ?? t.name;
-			const args = t.args?.map((a) => remapRefs(a, aliases));
-			return { kind: "reference", name, args };
-		}
-		case "optional": return { kind: "optional", inner: remapRefs(t.inner, aliases) };
-		case "union": return { kind: "union", members: t.members.map((m) => remapRefs(m, aliases)) };
-		case "intersection": return { kind: "intersection", members: t.members.map((m) => remapRefs(m, aliases)) };
-		case "table": return {
-			kind: "table",
-			fields: t.fields.map((f) => ({ ...f, type: remapRefs(f.type, aliases) })),
-			indexer: t.indexer ? { key: remapRefs(t.indexer.key, aliases), value: remapRefs(t.indexer.value, aliases) } : undefined,
-		};
-		case "function": return {
-			kind: "function",
-			params: t.params.map((p) => ({ ...p, type: remapRefs(p.type, aliases) })),
-			returns: remapRefs(t.returns, aliases),
-		};
-		case "tuple": return { kind: "tuple", elements: t.elements.map((e) => remapRefs(e, aliases)) };
-		case "keyof": return { kind: "keyof", inner: remapRefs(t.inner, aliases) };
-		default: return t;
-	}
-}
-
-// ── Module require builder ────────────────────────────────────────────────────
-
-function buildModuleRequire(
-	rojoProject: string,
-	sourcePath: string,
-	currentFilePath: string,
-	cwd: string,
-): string {
-	const resolution = resolveRojoPath(rojoProject, sourcePath, cwd);
-	if (resolution) return buildDirectRequire(resolution);
-	return buildRelativeRequire(currentFilePath, sourcePath);
-}
-
-// ── Per-directory type module generator ──────────────────────────────────────
-
-export interface DirEntry {
-	from: string;    // absolute path of the source .luau file
-	decl: TypeDecl;
-}
-
-/**
- * Generate the content of `_lumine_types.luau` for one directory.
- *
- * `dirPath`          — absolute path of the directory
- * `entries`          — all (file, typeDecl) pairs whose source file lives in dirPath
- * `globalTypeOrigins`— maps typeName → source .luau file (pre-update, still pointing at source files)
- * `rojoProject`      — absolute path to rojo project JSON
- * `cwd`              — process cwd (for relative path display)
- */
-export function generateDirTypesModule(
-	dirPath: string,
-	entries: DirEntry[],
-	globalTypeOrigins: Map<string, string>,
-	rojoProject: string,
-	cwd: string,
-): string {
-	const dirTypeNames = new Set(entries.map((e) => e.decl.name));
-	const typesFilePath = join(dirPath, "_lumine_types.luau");
-
-	// ── Scan all type bodies for external refs ────────────────────────────────
-	const allRefs = new Set<string>();
-	for (const { decl } of entries) {
-		collectRefs(decl.body, allRefs);
-		for (const def of decl.typeParamDefaults) {
-			if (def) collectRefs(def, allRefs);
-		}
-	}
-
-	// ── Group external deps by their source directory ─────────────────────────
-	// (external = referenced but not declared in this directory)
-	const requireGroups = new Map<string, { localVar: string }>();
-	const aliasMap = new Map<string, string>();
-
-	for (const name of allRefs) {
-		if (dirTypeNames.has(name)) continue;
-		const originFile = globalTypeOrigins.get(name);
-		if (!originFile) continue;
-		const originDir = dirname(originFile);
-		if (originDir === dirPath) continue;
-
-		let group = requireGroups.get(originDir);
-		if (!group) {
-			const uid = createHash("sha1").update(originDir).digest("hex").slice(0, 8);
-			group = { localVar: `_Types_${uid}` };
-			requireGroups.set(originDir, group);
-		}
-		aliasMap.set(name, `${group.localVar}.${name}`);
-	}
-
-	// ── Build output ──────────────────────────────────────────────────────────
-	const lines: string[] = [];
-	lines.push(`-- [lumine dir types] ${relative(cwd, dirPath)}/`);
-	lines.push("");
-
-	for (const [extDirPath, group] of requireGroups) {
-		const extTypesFile = join(extDirPath, "_lumine_types.luau");
-		lines.push(`local ${group.localVar} = ${buildModuleRequire(rojoProject, extTypesFile, typesFilePath, cwd)}`);
-	}
-	if (requireGroups.size > 0) lines.push("");
-
-	// Group entries by source file for readable section headers
-	const byFile = new Map<string, DirEntry[]>();
-	for (const entry of entries) {
-		let arr = byFile.get(entry.from);
-		if (!arr) { arr = []; byFile.set(entry.from, arr); }
-		arr.push(entry);
-	}
-
-	for (const [fromPath, fileEntries] of byFile) {
-		lines.push(`-- ${basename(fromPath)}`);
-		const seen = new Set<string>();
-		for (const { decl } of fileEntries) {
-			if (seen.has(decl.name)) continue;
-			seen.add(decl.name);
-
-			const params = decl.typeParams.length ? `<${decl.typeParams.join(", ")}>` : "";
-
-			if (isBarelyRecursive(decl.name, decl.body)) {
-				lines.push(`export type ${decl.name}${params} = any -- ⚠ bare recursive type`);
-				lines.push("");
-				continue;
-			}
-
-			const remapped = remapRefs(decl.body, aliasMap);
-			const selfType = decl.typeParams.length
-				? mkRef(decl.name, decl.typeParams.map((p) => mkRef(p)))
-				: mkRef(decl.name);
-			lines.push(`export type ${decl.name}${params} = ${emitTypeBody(remapped, selfType)}`);
-			lines.push("");
-		}
-	}
-
-	lines.push("return {}");
-	lines.push("");
-
-	return lines.join("\n");
-}
-```
-
 ### package/src/emit.ts
 ```ts
 /**
  * emit.ts
  *
- * Converts TypeManifest type declarations into Luau source strings.
- * Works entirely on LuauType AST nodes — no string parsing, no regex.
+ * Converts TypeManifest type declarations into Luau source strings for
+ * inline injection into .luau files. Works entirely on LuauType AST nodes —
+ * no string parsing, no regex, no split(",").
  *
  * Also owns the Lumine.lua builtin file generation.
- *
- * Note: generateInlineTypeDecls was removed in favour of _lumine_types.luau.
- * Per-file inline type injection is gone; all types now live in the per-directory
- * _lumine_types.luau generated by dirs.ts.
  */
-import type { TypeDecl } from "./types";
+import type { TypeManifest, TypeDecl } from "./types";
 import { printLuauType, mkRef, type LuauType, type LuauFnParam } from "./luau-types";
 import { LUMINE_BUILTIN_FUNCTIONS } from "./builtins";
-
-// ── Bare recursive type guard ─────────────────────────────────────────────────
-
-/** True if typeName can be reached from body through only union/intersection/optional nodes. */
-export function isBarelyRecursive(typeName: string, body: LuauType): boolean {
-    switch (body.kind) {
-        case "reference":
-            return body.name === typeName && !body.args?.length;
-        case "union":
-        case "intersection":
-            return body.members.some((m) => isBarelyRecursive(typeName, m));
-        case "optional":
-            return isBarelyRecursive(typeName, body.inner);
-        default:
-            return false;
-    }
-}
 
 // ── Type declaration emitter ──────────────────────────────────────────────────
 
@@ -1801,22 +1341,17 @@ export function isBarelyRecursive(typeName: string, body: LuauType): boolean {
  * Print a single type declaration as a Luau `export type` statement.
  * Interface table types with `isMethod` fields get `self` injected.
  */
-export function emitTypeDecl(decl: TypeDecl): string {
-    const params = decl.typeParams.length ? `<${decl.typeParams.join(", ")}>` : "";
+function emitTypeDecl(decl: TypeDecl): string {
+	const params = decl.typeParams.length ? `<${decl.typeParams.join(", ")}>` : "";
+	const selfType = decl.typeParams.length
+		? mkRef(
+				decl.name,
+				decl.typeParams.map((p) => mkRef(p)),
+			)
+		: mkRef(decl.name);
 
-    if (isBarelyRecursive(decl.name, decl.body)) {
-        return `export type ${decl.name}${params} = any -- ⚠ bare recursive type`;
-    }
-
-    const selfType = decl.typeParams.length
-        ? mkRef(
-            decl.name,
-            decl.typeParams.map((p) => mkRef(p)),
-        )
-        : mkRef(decl.name);
-
-    const body = emitTypeBody(decl.body, selfType);
-    return `export type ${decl.name}${params} = ${body}`;
+	const body = emitTypeBody(decl.body, selfType);
+	return `export type ${decl.name}${params} = ${body}`;
 }
 
 /**
@@ -1824,40 +1359,62 @@ export function emitTypeDecl(decl: TypeDecl): string {
  * by injecting `self: SelfType` as the first parameter — this cannot be done
  * inside printLuauType because only declaration-level tables have a self type.
  */
-export function emitTypeBody(t: LuauType, selfType: LuauType): string {
-    if (t.kind !== "table") return printLuauType(t);
+function emitTypeBody(t: LuauType, selfType: LuauType): string {
+	if (t.kind !== "table") return printLuauType(t);
 
-    const lines: string[] = [];
+	const lines: string[] = [];
 
-    if (t.indexer) {
-        lines.push(
-            `    [${printLuauType(t.indexer.key, 0, true)}]: ${printLuauType(t.indexer.value, 0, true)},`,
-        );
-    }
+	if (t.indexer) {
+		lines.push(
+			`    [${printLuauType(t.indexer.key, 0, true)}]: ${printLuauType(t.indexer.value, 0, true)},`,
+		);
+	}
 
-    for (const f of t.fields) {
-        const opt = f.optional ? "?" : "";
-        if (f.isMethod && f.type.kind === "function") {
-            // Inject self as first param
-            const selfParam: LuauFnParam = {
-                name: "self",
-                type: selfType,
-                optional: false,
-                rest: false,
-            };
-            const withSelf: LuauType = {
-                kind: "function",
-                params: [selfParam, ...f.type.params],
-                returns: f.type.returns,
-            };
-            lines.push(`    ${f.name}: ${printLuauType(withSelf)}${opt},`);
-        } else {
-            lines.push(`    ${f.name}: ${printLuauType(f.type, 0, true)}${opt},`);
-        }
-    }
+	for (const f of t.fields) {
+		const opt = f.optional ? "?" : "";
+		if (f.isMethod && f.type.kind === "function") {
+			// Inject self as first param
+			const selfParam: LuauFnParam = {
+				name: "self",
+				type: selfType,
+				optional: false,
+				rest: false,
+			};
+			const withSelf: LuauType = {
+				kind: "function",
+				params: [selfParam, ...f.type.params],
+				returns: f.type.returns,
+			};
+			lines.push(`    ${f.name}: ${printLuauType(withSelf)}${opt},`);
+		} else {
+			lines.push(`    ${f.name}: ${printLuauType(f.type, 0, true)}${opt},`);
+		}
+	}
 
-    if (lines.length === 0) return "{}";
-    return `{\n${lines.join("\n")}\n}`;
+	if (lines.length === 0) return "{}";
+	return `{\n${lines.join("\n")}\n}`;
+}
+
+// ── Per-file inline type declarations ────────────────────────────────────────
+
+/**
+ * Generate all `export type` declarations for types defined in this manifest.
+ * Used to inline types directly into the corresponding .luau file.
+ *
+ * Deduplicates namespace types (registered under both "Ns.Foo" and "Ns_Foo").
+ */
+export function generateInlineTypeDecls(manifest: TypeManifest): string {
+	const seen = new Set<string>();
+	const lines: string[] = [];
+
+	for (const decl of Object.values(manifest.types)) {
+		if (seen.has(decl.name)) continue;
+		seen.add(decl.name);
+		lines.push(emitTypeDecl(decl));
+		lines.push("");
+	}
+
+	return lines.join("\n").trimEnd();
 }
 
 // ── Lumine.lua builtin file ───────────────────────────────────────────────────
@@ -1869,7 +1426,7 @@ export function emitTypeBody(t: LuauType, selfType: LuauType): string {
  * and the structural Promise<T> type.
  */
 export function generateLumineFile(): string {
-    return `-- [generated by lumine — do not edit]\n\n${LUMINE_BUILTIN_FUNCTIONS}\nreturn {}\n`;
+	return `-- [generated by lumine — do not edit]\n\n${LUMINE_BUILTIN_FUNCTIONS}\nreturn {}\n`;
 }
 ```
 
@@ -1884,7 +1441,7 @@ export function generateLumineFile(): string {
  */
 import ts from "typescript";
 import { readFileSync } from "fs";
-import type { TypeManifest, FunctionSignature, TypeDecl } from "./types";
+import type { TypeManifest, ParamInfo, FunctionSignature, TypeDecl } from "./types";
 import {
 	LuauAny,
 	LuauNever,
@@ -2312,22 +1869,6 @@ function convertFunctionType(
 	return { kind: "function", params: luauParams, returns: ret };
 }
 
-function toFunctionSignature(
-	name: string,
-	params: ts.NodeArray<ts.ParameterDeclaration>,
-	returnType: ts.TypeNode | undefined,
-	typeParams: string[],
-	ctx: Ctx,
-): FunctionSignature {
-	const fnType = convertFunctionType(params, returnType, ctx);
-	return {
-		name,
-		params: fnType.kind === "function" ? fnType.params : [],
-		returnType: fnType.kind === "function" ? fnType.returns : LuauVoid,
-		typeParams,
-	};
-}
-
 /** Given an array table type {T} or {[number]: T}, extract T. Otherwise return as-is. */
 function extractArrayElement(t: LuauType): LuauType {
 	if (t.kind === "table" && t.indexer && t.fields.length === 0) return t.indexer.value;
@@ -2467,52 +2008,6 @@ function extractInterfaceMembers(
 	return fields;
 }
 
-function extractClassMembers(
-	node: ts.ClassDeclaration,
-	source: ts.SourceFile,
-	ctx: Ctx,
-	classTypeParams: string[],
-): LuauField[] {
-	const fields: LuauField[] = [];
-
-	for (const member of node.members) {
-		const isPrivate = ts.canHaveModifiers(member) && ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
-		if (isPrivate) continue;
-
-		if (ts.isPropertyDeclaration(member) && member.name) {
-			const propType = member.type ? tsNodeToLuau(member.type, ctx) : LuauAny;
-			fields.push({
-				name: member.name.getText(source),
-				type: propType,
-				optional: !!member.questionToken,
-				isMethod: false,
-			});
-		}
-
-		if (ts.isMethodDeclaration(member) && member.name) {
-			const { names: methodTypeParams } = extractTypeParams(member, ctx);
-			if (methodTypeParams.length > 0) continue;
-
-			const methodCtx: Ctx = {
-				...ctx,
-				typeParams: new Set([...classTypeParams, ...methodTypeParams]),
-			};
-			fields.push({
-				name: member.name.getText(source),
-				type: convertFunctionType(
-					member.parameters,
-					member.type as ts.TypeNode | undefined,
-					methodCtx,
-				),
-				optional: !!member.questionToken,
-				isMethod: true,
-			});
-		}
-	}
-
-	return fields;
-}
-
 // ── Collect sibling type names from a namespace block ────────────────────────
 
 /**
@@ -2571,64 +2066,21 @@ export function extractManifest(dtsPath: string): TypeManifest {
 		if (ts.isFunctionDeclaration(node) && node.name) {
 			const name = node.name.text;
 			const { names: typeParams } = extractTypeParams(node, ctx);
-			manifest.functions[name] = toFunctionSignature(
-				name,
-				node.parameters,
-				node.type,
-				typeParams,
-				ctx,
-			);
-		}
-
-		// ── Class declarations ────────────────────────────────────────────────
-		if (ts.isClassDeclaration(node) && node.name) {
-			const name = node.name.text;
-			const { names: classTypeParams, defaults: typeParamDefaults } = extractTypeParams(node, ctx);
-			const classCtx: Ctx = {
-				...ctx,
-				typeParams: new Set(classTypeParams),
-			};
-
-			manifest.types[name] = {
-				name,
-				typeParams: classTypeParams,
-				typeParamDefaults,
-				body: {
-					kind: "table",
-					fields: extractClassMembers(node, source, classCtx, classTypeParams),
-				},
-			};
-
-			for (const member of node.members) {
-				if (ts.isConstructorDeclaration(member)) {
-					const signatureName = `${name}:constructor`;
-					manifest.functions[signatureName] = toFunctionSignature(
-						signatureName,
-						member.parameters,
-						undefined,
-						classTypeParams,
-						classCtx,
-					);
-				}
-
-				if (ts.isMethodDeclaration(member) && member.name) {
-					const methodName = member.name.getText(source);
-					const { names: methodTypeParams } = extractTypeParams(member, classCtx);
-					const signatureName = `${name}:${methodName}`;
-					const signatureTypeParams = [...classTypeParams, ...methodTypeParams];
-					const methodCtx: Ctx = {
-						...classCtx,
-						typeParams: new Set(signatureTypeParams),
-					};
-					manifest.functions[signatureName] = toFunctionSignature(
-						signatureName,
-						member.parameters,
-						member.type as ts.TypeNode | undefined,
-						signatureTypeParams,
-						methodCtx,
-					);
-				}
-			}
+			const params: ParamInfo[] = Array.from(node.parameters).map((p) => {
+				const isRest = !!p.dotDotDotToken;
+				const pType = p.type ? tsNodeToLuau(p.type, ctx) : LuauAny;
+				return {
+					name: p.name
+						.getText(source)
+						.replace(/^\.\.\./, "")
+						.trim(),
+					type: isRest ? extractArrayElement(pType) : pType,
+					optional: !!p.questionToken,
+					rest: isRest,
+				};
+			});
+			const returnType = tsNodeToLuau(node.type, ctx);
+			manifest.functions[name] = { name, params, returnType, typeParams };
 		}
 
 		// ── Interface declarations ────────────────────────────────────────────
@@ -2725,30 +2177,27 @@ export function extractManifest(dtsPath: string): TypeManifest {
 ### package/src/index.ts
 ```ts
 #!/usr/bin/env bun
-
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from "fs";
 import { createHash } from "crypto";
-import { join, relative, dirname, basename } from "path";
+import { join, relative, dirname } from "path";
 import { loadConfig } from "./config";
 import { extractManifest } from "./extract";
 import { annotateFile } from "./annotate";
 import { generateLumineFile } from "./emit";
-import { generateDirTypesModule } from "./dirs";
 import type { TypeManifest, AnnotationResult } from "./types";
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.0";
 
 function printHelp() {
     console.log(`lumine v${VERSION}
 Luau type annotation tool for compiled roblox-ts / rotor projects.
 
 Usage:
-  lumine                      Run once — annotate all .luau files in outDir
-  lumine -w, --watch          Watch mode — re-annotate on .luau changes
-  lumine --dry-run            Show what would be annotated without writing
-  lumine --verbose            Log each annotated file (also works with --watch)
-  lumine -v, --version        Print version
-  lumine -h, --help           Show this help`);
+  lumine               Run once — annotate all .luau files in outDir
+  lumine -w, --watch   Watch mode — re-annotate on .luau changes
+  lumine --dry-run     Show what would be annotated without writing
+  lumine -v, --version Print version
+  lumine -h, --help    Show this help`);
 }
 
 function walkLuau(dir: string): string[] {
@@ -2758,17 +2207,6 @@ function walkLuau(dir: string): string[] {
         const stat = statSync(full);
         if (stat.isDirectory()) results.push(...walkLuau(full));
         else if (entry.endsWith(".luau")) results.push(full);
-    }
-    return results;
-}
-
-function walkDts(dir: string): string[] {
-    const results: string[] = [];
-    for (const entry of readdirSync(dir)) {
-        const full = join(dir, entry);
-        const stat = statSync(full);
-        if (stat.isDirectory()) results.push(...walkDts(full));
-        else if (entry.endsWith(".d.ts")) results.push(full);
     }
     return results;
 }
@@ -2789,6 +2227,7 @@ function hashString(s: string): string {
 // ── Cache types ───────────────────────────────────────────────────────────────
 
 interface FileCache {
+    contentHash: string;
     dtsHash: string;
     result: Omit<AnnotationResult, "filePath">;
 }
@@ -2800,45 +2239,24 @@ interface ManifestCache {
 
 // ── Change detection ──────────────────────────────────────────────────────────
 
-/**
- * Watch only .d.ts files for changes. rbxtsc writes a new .d.ts whenever a
- * TypeScript source file actually changes. lumine never touches .d.ts files.
- * This breaks the watch loop: lumine writing annotated .luau files does NOT
- * cause .d.ts files to change, so no spurious re-triggers occur.
- */
-function hasDtsChanges(dir: string, knownMtimes: Map<string, number>): boolean {
+function hasChangedFiles(dir: string, knownHashes: Map<string, string>): boolean {
     if (!existsSync(dir)) return false;
-    const current = walkDts(dir);
-    // New files that weren't there before
-    for (const path of current) {
-        const mtime = statSync(path).mtimeMs;
-        if (!knownMtimes.has(path) || mtime !== knownMtimes.get(path)) return true;
-    }
-    // Deleted files
-    for (const path of knownMtimes.keys()) {
-        if (!existsSync(path)) return true;
+    for (const path of walkLuau(dir)) {
+        const current = hashFile(path);
+        if (!knownHashes.has(path) || current !== knownHashes.get(path)) return true;
     }
     return false;
 }
 
-function snapshotDtsMtimes(dir: string): Map<string, number> {
-    const map = new Map<string, number>();
-    if (!existsSync(dir)) return map;
-    for (const path of walkDts(dir)) {
-        map.set(path, statSync(path).mtimeMs);
-    }
-    return map;
-}
-
 // ── Lumine.lua generation ─────────────────────────────────────────────────────
 
-function ensureLumineFile(lumineFilePath: string, dryRun: boolean, verbose: boolean): void {
+function ensureLumineFile(lumineFilePath: string, dryRun: boolean): void {
     const content = generateLumineFile();
     if (hashString(content) === hashFile(lumineFilePath)) return;
     if (!dryRun) {
         mkdirSync(dirname(lumineFilePath), { recursive: true });
         writeFileSync(lumineFilePath, content, "utf-8");
-        if (verbose) console.log(`[lumine] wrote ${lumineFilePath}`);
+        console.log(`[lumine] wrote ${lumineFilePath}`);
     }
 }
 
@@ -2846,34 +2264,27 @@ function ensureLumineFile(lumineFilePath: string, dryRun: boolean, verbose: bool
 
 interface RunContext {
     dryRun?: boolean;
-    verbose?: boolean;
     fileCache?: Map<string, FileCache>;
     manifestCache?: Map<string, ManifestCache>;
+    diskHashes?: Map<string, string>;
 }
 
 async function run(ctx: RunContext = {}) {
     const cwd = process.cwd();
     const config = loadConfig(cwd);
     const { outDir, declaration, rojoProject, includeDir } = config;
-    const { dryRun = false, verbose = false, fileCache, manifestCache } = ctx;
+    const { dryRun = false, fileCache, manifestCache, diskHashes } = ctx;
     const lumineFilePath = join(includeDir, "Lumine.lua");
 
     if (!existsSync(outDir)) {
-        console.error(
-            `[lumine] error: outDir "${outDir}" does not exist — run your compiler first`,
-        );
+        console.error(`[lumine] error: outDir "${outDir}" does not exist — run your compiler first`);
         process.exit(1);
     }
 
-    ensureLumineFile(lumineFilePath, dryRun, verbose);
+    ensureLumineFile(lumineFilePath, dryRun);
 
-    const luauFiles = walkLuau(outDir).filter(
-        (f) => f !== lumineFilePath && basename(f) !== "_lumine_types.luau",
-    );
-    if (luauFiles.length === 0) {
-        console.log("[lumine] no .luau files found");
-        return;
-    }
+    const luauFiles = walkLuau(outDir).filter(f => f !== lumineFilePath);
+    if (luauFiles.length === 0) { console.log("[lumine] no .luau files found"); return; }
 
     // ── Phase 1: Extract manifests ────────────────────────────────────────────
     const manifests = new Map<string, TypeManifest>();
@@ -2897,18 +2308,19 @@ async function run(ctx: RunContext = {}) {
             }
             manifests.set(luauPath, manifest);
         }
-        if (verbose && dtsChangedCount > 0) {
-            console.log(
-                `[lumine] ${dtsChangedCount} .d.ts changed, ${manifests.size - dtsChangedCount} cached`,
-            );
+        if (dtsChangedCount > 0) {
+            console.log(`[lumine] ${dtsChangedCount} .d.ts changed, ${manifests.size - dtsChangedCount} cached`);
         }
     }
 
     // ── Build global type origin map ──────────────────────────────────────────
+    // Maps Luau type name → the .luau file that declares it, so cross-file
+    // references can be handled with require() + re-export.
     const globalTypeOrigins = new Map<string, string>();
     const globalTypeDecls = new Map<string, import("./types").TypeDecl>();
     for (const [luauPath, m] of manifests.entries()) {
         for (const decl of Object.values(m.types)) {
+            // Prefer first registration (own file wins)
             if (!globalTypeOrigins.has(decl.name)) {
                 globalTypeOrigins.set(decl.name, luauPath);
                 globalTypeDecls.set(decl.name, decl);
@@ -2916,60 +2328,15 @@ async function run(ctx: RunContext = {}) {
         }
     }
 
-    // ── Phase 0: Generate per-directory _lumine_types.luau ───────────────────
-    const dirEntries = new Map<string, Array<{ from: string; decl: import("./types").TypeDecl }>>();
-
-    for (const [luauPath, manifest] of manifests.entries()) {
-        const dir = dirname(luauPath);
-        let entries = dirEntries.get(dir);
-        if (!entries) {
-            entries = [];
-            dirEntries.set(dir, entries);
-        }
-        for (const decl of Object.values(manifest.types)) {
-            if (!entries.some((e) => e.decl.name === decl.name)) {
-                entries.push({ from: luauPath, decl });
-            }
-        }
-    }
-
-    for (const [dirPath, entries] of dirEntries) {
-        if (entries.length === 0) continue;
-        const typesFilePath = join(dirPath, "_lumine_types.luau");
-        const content = generateDirTypesModule(
-            dirPath,
-            entries,
-            globalTypeOrigins,
-            rojoProject,
-            cwd,
-        );
-        const contentHash = hashString(content);
-        if (contentHash !== hashFile(typesFilePath)) {
-            if (!dryRun) {
-                mkdirSync(dirname(typesFilePath), { recursive: true });
-                writeFileSync(typesFilePath, content, "utf-8");
-            }
-            if (verbose) console.log(`[lumine] wrote ${relative(cwd, typesFilePath)}`);
-        }
-        for (const { decl } of entries) {
-            globalTypeOrigins.set(decl.name, typesFilePath);
-        }
-    }
-
     // ── Phase 2: Annotate .luau files ────────────────────────────────────────
-    let totalAnnotated = 0,
-        totalSkipped = 0,
-        filesProcessed = 0,
-        filesCached = 0;
+    let totalAnnotated = 0, totalSkipped = 0, filesProcessed = 0, filesCached = 0;
 
     for (const luauPath of luauFiles) {
+        const srcHash = hashFile(luauPath);
         const dtsHash = declaration ? hashFile(dtsPathFor(luauPath)) : "";
         const cached = fileCache?.get(luauPath);
 
-        // Cache hit: .d.ts hasn't changed since last annotation and no global
-        // dts changes occurred. The .luau content on disk is irrelevant — we
-        // only care whether the type information (d.ts) has changed.
-        if (cached && cached.dtsHash === dtsHash && dtsChangedCount === 0) {
+        if (cached && cached.contentHash === srcHash && cached.dtsHash === dtsHash) {
             totalAnnotated += cached.result.annotated;
             totalSkipped += cached.result.skipped;
             filesCached++;
@@ -2979,13 +2346,7 @@ async function run(ctx: RunContext = {}) {
         const manifest = manifests.get(luauPath) ?? { functions: {}, types: {} };
         const source = readFileSync(luauPath, "utf-8");
         const result = annotateFile(
-            source,
-            luauPath,
-            manifest,
-            rojoProject,
-            cwd,
-            globalTypeOrigins,
-            globalTypeDecls,
+            source, luauPath, manifest, rojoProject, lumineFilePath, cwd, globalTypeOrigins, globalTypeDecls,
         );
 
         totalAnnotated += result.annotated;
@@ -2993,84 +2354,80 @@ async function run(ctx: RunContext = {}) {
         filesProcessed++;
 
         const sourceChanged = result.source !== source;
+        const outputHash = sourceChanged ? hashString(result.source) : srcHash;
 
         if (sourceChanged) {
             if (!dryRun) {
                 writeFileSync(luauPath, result.source, "utf-8");
+                diskHashes?.set(luauPath, outputHash);
             }
-            if (verbose) {
-                if (result.annotated > 0) {
-                    console.log(
-                        `[lumine] ${relative(cwd, luauPath)} — ${result.annotated} annotated` +
-                        (result.skipped > 0 ? `, ${result.skipped} skipped` : ""),
-                    );
-                } else {
-                    console.log(`[lumine] ${relative(cwd, luauPath)} — types injected`);
-                }
+            if (result.annotated > 0) {
+                console.log(
+                    `[lumine] ${relative(cwd, luauPath)} — ${result.annotated} annotated` +
+                    (result.skipped > 0 ? `, ${result.skipped} skipped` : ""),
+                );
+            } else {
+                console.log(`[lumine] ${relative(cwd, luauPath)} — types injected`);
             }
+        } else {
+            diskHashes?.set(luauPath, srcHash);
         }
 
         if (fileCache) {
             fileCache.set(luauPath, {
+                contentHash: outputHash,
                 dtsHash,
-                result: {
-                    annotated: result.annotated,
-                    skipped: result.skipped,
-                    usesBuiltins: result.usesBuiltins,
-                },
+                result: { annotated: result.annotated, skipped: result.skipped, usesBuiltins: result.usesBuiltins },
             });
         }
     }
 
     const cacheMsg = filesCached > 0 ? `, ${filesCached} cached` : "";
     console.log(
-        `[lumine] done — ${totalAnnotated} annotations, ${filesProcessed} files processed${cacheMsg}` +
+        `\n[lumine] done — ${totalAnnotated} annotations, ${filesProcessed} files processed${cacheMsg}` +
         (dryRun ? " (dry run)" : ""),
     );
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
-async function runOnce(dryRun = false, verbose = false) {
-    await run({ dryRun, verbose });
-}
+async function runOnce(dryRun = false) { await run({ dryRun }); }
 
-async function runWatch(verbose = false) {
+async function runWatch() {
     const cwd = process.cwd();
     const { outDir } = loadConfig(cwd);
 
     const fileCache = new Map<string, FileCache>();
     const manifestCache = new Map<string, ManifestCache>();
+    const diskHashes = new Map<string, string>();
 
     console.log(`[lumine] watching ${outDir} for changes...`);
 
-    // Initial run
+    // Run once immediately so existing files are annotated on startup.
+    // diskHashes is populated by this run, so only genuine rbxtsc output
+    // (different content) triggers a second pass.
     if (existsSync(outDir)) {
-        await run({ verbose, fileCache, manifestCache });
+        await run({ fileCache, manifestCache, diskHashes });
     }
-
-    // Snapshot .d.ts mtimes AFTER the initial run so we only trigger on
-    // genuine rbxtsc rebuilds, not on the files already present at startup.
-    let knownMtimes = snapshotDtsMtimes(outDir);
 
     let running = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     const poll = setInterval(() => {
         if (running) return;
-        if (!hasDtsChanges(outDir, knownMtimes)) return;
-        if (debounceTimer) return;
+        if (!hasChangedFiles(outDir, diskHashes)) return;
+        if (debounceTimer) return; // already scheduled — let it fire
 
-        // 800ms quiet-period: rbxtsc writes multiple files incrementally.
+        // 800ms quiet-period: rbxtsc writes multiple files incrementally;
+        // firing after the first write would annotate a half-written output.
+        // We don't reset the timer on subsequent writes — lumine fires once,
+        // ~800ms after rbxtsc starts writing, regardless of how many files changed.
         debounceTimer = setTimeout(async () => {
             if (running) return;
             running = true;
-            // Snapshot before the run so we don't miss changes that arrive
-            // while we're processing.
-            knownMtimes = snapshotDtsMtimes(outDir);
-            console.log(`[lumine] change detected — re-annotating...`);
+            console.log(`\n[lumine] change detected — re-annotating...`);
             try {
-                await run({ verbose, fileCache, manifestCache });
+                await run({ fileCache, manifestCache, diskHashes });
             } finally {
                 running = false;
                 debounceTimer = null;
@@ -3081,19 +2438,17 @@ async function runWatch(verbose = false) {
     process.on("SIGINT", () => {
         clearInterval(poll);
         if (debounceTimer) clearTimeout(debounceTimer);
-        console.log("[lumine] stopped.");
+        console.log("\n[lumine] stopped.");
         process.exit(0);
     });
 }
 
 const args = process.argv.slice(2);
-const verbose = args.includes("--verbose");
-
 if (args.includes("--help") || args.includes("-h")) printHelp();
 else if (args.includes("--version") || args.includes("-v")) console.log(VERSION);
-else if (args.includes("--watch") || args.includes("-w")) runWatch(verbose);
-else if (args.includes("--dry-run")) runOnce(true, verbose);
-else runOnce(false, verbose);
+else if (args.includes("--watch") || args.includes("-w")) runWatch();
+else if (args.includes("--dry-run")) runOnce(true);
+else runOnce();
 ```
 
 ### package/src/luau-types.ts
@@ -3139,7 +2494,7 @@ export interface LuauFnParam {
     name: string;
     type: LuauType;
     optional: boolean;
-    rest: boolean;
+    rest: boolean; // true → emit as ...: T
 }
 
 // ── Constant singletons ───────────────────────────────────────────────────────
@@ -3207,10 +2562,8 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
 
         case "optional": {
             const inner = printLuauType(t.inner, depth + 1, inGenericArg);
-            // Wrap lower-precedence types so optional applies to the whole type.
-            return t.inner.kind === "function" || t.inner.kind === "intersection" || t.inner.kind === "union"
-                ? `(${inner})?`
-                : `${inner}?`;
+            // Wrap unions so we get (A | B)? not A | B?
+            return t.inner.kind === "union" ? `(${inner})?` : `${inner}?`;
         }
 
         case "union":
@@ -3262,9 +2615,9 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
 }
 
 function printFnParam(p: LuauFnParam, depth: number): string {
-    if (p.rest) return `...${printLuauType(p.type, depth + 1, true)}`;
+    if (p.rest) return `...: ${printLuauType(p.type, depth + 1, true)}`;
     const opt = p.optional ? "?" : "";
-    return `${p.name}: ${printOptionalTarget(p.type, depth + 1, true, p.optional)}${opt}`;
+    return `${p.name}: ${printLuauType(p.type, depth + 1, true)}${opt}`;
 }
 
 /** ": T" for return annotations, or "" for void. */
@@ -3277,20 +2630,7 @@ export function printReturn(t: LuauType): string {
 export function printParam(name: string, t: LuauType, optional: boolean, rest: boolean): string {
     if (rest) return `...: ${printLuauType(t, 0, true)}`;
     const opt = optional ? "?" : "";
-    return `${name}: ${printOptionalTarget(t, 0, false, optional)}${opt}`;
-}
-
-function printOptionalTarget(
-    t: LuauType,
-    depth: number,
-    inGenericArg: boolean,
-    optional: boolean,
-): string {
-    const printed = printLuauType(t, depth, inGenericArg);
-    if (!optional) return printed;
-    return t.kind === "function" || t.kind === "intersection" || t.kind === "union"
-        ? `(${printed})`
-        : printed;
+    return `${name}: ${printLuauType(t, 0, false)}${opt}`;
 }
 
 /** True if any node in the tree references a _Lumine.X builtin. */
@@ -3318,8 +2658,8 @@ export function typeUsesBuiltins(t: LuauType): boolean {
 
 ### package/src/rojo.ts
 ```ts
-import { existsSync, readFileSync } from "fs";
 import { resolve, relative, dirname, basename } from "path";
+import { existsSync, readFileSync } from "fs";
 
 interface RojoNode {
 	$path?: string;
@@ -3352,6 +2692,43 @@ const ROBLOX_SERVICES = new Set([
 	"RunService",
 ]);
 
+/**
+ * Build a require() using only relative script-tree navigation.
+ * Used as a fallback when no .project.json exists.
+ *
+ * e.g. from  out/shared/Foo.luau
+ *      to    out/net/Bar.luau
+ * →  require(script.Parent.Parent.net.Bar)
+ *
+ * @param fromFilePath  absolute path of the file doing the requiring
+ * @param toFilePath    absolute path of the module being required
+ */
+export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
+	const fromDir = dirname(fromFilePath);
+	const fromBase = basename(fromFilePath)
+		.replace(/\.luau?$/, "")
+		.replace(/\.ts$/, "");
+	const isInit = fromBase === "init" || fromBase === "index";
+
+	const rel = relative(fromDir, toFilePath)
+		.replace(/\\/g, "/")
+		.replace(/\.luau?$/, "");
+
+	const parts = rel.split("/");
+	// init.luau's `script` IS the folder, so no initial .Parent needed
+	let path = isInit ? "script" : "script.Parent";
+
+	for (const part of parts) {
+		if (part === "..") {
+			path += ".Parent";
+		} else {
+			path += `:WaitForChild("${part}")`;
+		}
+	}
+
+	return `require(${path})`;
+}
+
 function walkTree(node: RojoNode, path: string[], mappings: PathMapping[], cwd: string): void {
 	for (const [key, value] of Object.entries(node)) {
 		if (key.startsWith("$") || typeof value !== "object" || value === null) continue;
@@ -3380,7 +2757,7 @@ export function resolveRojoPath(
 	targetFilePath: string,
 	cwd: string,
 ): RojoResolution | null {
-	if (!rojoProjectPath || !existsSync(rojoProjectPath)) return null;
+	if (!existsSync(rojoProjectPath)) return null;
 
 	let project: { tree: RojoNode };
 	try {
@@ -3423,45 +2800,13 @@ export function buildTsImport(resolution: RojoResolution): string {
 	return `TS.import(script, game:GetService("${resolution.service}"), ${args})`;
 }
 
+// Always use WaitForChild — safer than dot notation for async instance loading,
+// and matches the pattern rbxtsc itself uses for RuntimeLib and Promise.
 export function buildDirectRequire(resolution: RojoResolution): string {
 	let path = `game:GetService("${resolution.service}")`;
 	for (const seg of resolution.segments) {
 		path += `:WaitForChild("${seg}")`;
 	}
-	return `require(${path})`;
-}
-
-/**
- * Build a require() using only relative script-tree navigation.
- * Used as a fallback when no .project.json exists.
- *
- * e.g. from  out/transport/queue.luau  →  out/type.luau
- *   script.Parent = transport folder
- *   .Parent       = out folder
- *   :WaitForChild("type")
- * → require(script.Parent.Parent:WaitForChild("type"))
- */
-export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
-	const fromBase = basename(fromFilePath).replace(/\.luau?$/, "");
-	const isInit = fromBase === "init" || fromBase === "index";
-
-	const fromDir = dirname(fromFilePath);
-	const rel = relative(fromDir, toFilePath)
-		.replace(/\\/g, "/")
-		.replace(/\.luau?$/, "");
-
-	const parts = rel.split("/");
-	// init.luau's `script` IS the folder; regular files need .Parent to reach their folder
-	let path = isInit ? "script" : "script.Parent";
-
-	for (const part of parts) {
-		if (part === "..") {
-			path += ".Parent";
-		} else {
-			path += `:WaitForChild("${part}")`;
-		}
-	}
-
 	return `require(${path})`;
 }
 ```

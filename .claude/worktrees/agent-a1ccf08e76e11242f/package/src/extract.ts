@@ -7,7 +7,7 @@
  */
 import ts from "typescript";
 import { readFileSync } from "fs";
-import type { TypeManifest, FunctionSignature, TypeDecl } from "./types";
+import type { TypeManifest, ParamInfo, FunctionSignature, TypeDecl } from "./types";
 import {
 	LuauAny,
 	LuauNever,
@@ -599,7 +599,7 @@ function extractClassMembers(
 	const fields: LuauField[] = [];
 
 	for (const member of node.members) {
-		const isPrivate = ts.canHaveModifiers(member) && ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
+		const isPrivate = ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
 		if (isPrivate) continue;
 
 		if (ts.isPropertyDeclaration(member) && member.name) {

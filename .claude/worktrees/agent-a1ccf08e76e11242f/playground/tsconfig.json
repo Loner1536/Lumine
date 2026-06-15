@@ -1,0 +1,33 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "commonjs",
+		"moduleResolution": "Node",
+		"moduleDetection": "force",
+		"strict": true,
+		"noLib": true,
+		"esModuleInterop": true,
+		"allowSyntheticDefaultImports": true,
+		"forceConsistentCasingInFileNames": true,
+		"downlevelIteration": true,
+		"resolveJsonModule": true,
+		"incremental": true,
+		"tsBuildInfoFile": "out/tsconfig.tsbuildinfo",
+		"jsx": "react",
+		"jsxFactory": "React.createElement",
+		"jsxFragmentFactory": "React.Fragment",
+		"rootDir": "./src",
+		"baseUrl": ".",
+		"outDir": "./out/src",
+		"declaration": true,
+		"experimentalDecorators": true,
+		"typeRoots": ["./node_modules/@rbxts"],
+		"paths": {
+			"@interface/*": ["./src/client/interface/*"],
+			"@shared/*": ["./src/shared/*"],
+			"@client/*": ["./src/client/*"],
+			"@server/*": ["./src/server/*"]
+		}
+	},
+	"include": ["./src"]
+}

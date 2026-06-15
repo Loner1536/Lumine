@@ -25,19 +25,11 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-bun-debug.log*
+bun-debug.log*# Ignore local npm token
+.npmrc
 
 # Ignore local npm token
 .npmrc
-
-# ==========================================
-# Toolchain & Package Managers
-# ==========================================
-# Local PNPM store cache used in your monorepo workspace
-.pnpm-store/
-
-# Rokit toolchain manager build/tool artifacts
-.rokit/
 
 # ==========================================
 # Roblox / Rojo / rbxtsc
@@ -49,11 +41,10 @@ bun-debug.log*
 *.build
 *.lock
 
-# Rojo project temp and artifacts
+# Rojo project temp
 rojo.json.backup
 /roblox-plugins/
 *.rbxlx.bak
-sourcemap.json
 
 # rbxtsc output
 include/
@@ -103,8 +94,6 @@ Desktop.ini
 *.swp
 *.swo
 *.diff
-.darklua/
-coverage/
 
 # Turbo / pnpm
 .turbo/
