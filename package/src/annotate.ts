@@ -175,9 +175,11 @@ function collectReferencedTypeNames(manifest: TypeManifest): Set<string> {
 
 // ── Require helpers ───────────────────────────────────────────────────────────
 
-function buildLumineRequire(): string {
-	// Hardcoded: Lumine.lua always lives in the standard rbxts_include location
-	return `local _Lumine = require(game:GetService("ReplicatedStorage"):WaitForChild("rbxts_include"):WaitForChild("Lumine"))`;
+function buildLumineTypeImport(): string {
+	// Hardcoded: Lumine.lua always lives in the standard rbxts_include location.
+	// typeof(require(...)) is type-only in Luau, so this cannot create runtime
+	// require cycles in annotated output.
+	return `type _Lumine = typeof(require(game:GetService("ReplicatedStorage"):WaitForChild("rbxts_include"):WaitForChild("Lumine")))`;
 }
 
 function buildModuleRequire(
@@ -194,7 +196,8 @@ function buildModuleRequire(
 // ── Top-of-file injection (Bug #6: bracket-aware require scanning) ────────────
 
 /**
- * Walk forward consuming `local X = require(...)` lines and blank lines.
+ * Walk forward consuming `local X = require(...)` / `type X = typeof(require(...))`
+ * lines and blank lines.
  * Returns the position after the last consumed character.
  * Bracket-aware — handles deeply nested require paths like
  * require(game:GetService("X"):WaitForChild("Y"):WaitForChild("Z")).
@@ -210,8 +213,11 @@ function skipHeaderRegion(src: string, start: number): number {
 			continue;
 		}
 
-		// `local X = require(` — scan for matching )
-		const reqMatch = /^local [A-Za-z_][A-Za-z0-9_]* = require\(/.exec(slice);
+		// `local X = require(` or `type X = typeof(require(` — scan for matching )
+		const reqMatch =
+			/^(?:local [A-Za-z_][A-Za-z0-9_]* = require\(|type [A-Za-z_][A-Za-z0-9_]* = typeof\(require\()/.exec(
+				slice,
+			);
 		if (reqMatch) {
 			let depth = 0,
 				i = reqMatch[0].length - 1; // start at the (
@@ -229,7 +235,7 @@ function skipHeaderRegion(src: string, start: number): number {
 			if (found) {
 				// consume to end of line
 				let j = i + 1;
-				while (j < slice.length && slice[j] === " ") j++;
+				while (j < slice.length && slice[j] !== "\n") j++;
 				if (j < slice.length && slice[j] === "\n") j++;
 				pos += j;
 				continue;
@@ -271,7 +277,9 @@ function fillTypeParamDefaults(
 ): LuauType {
 	switch (t.kind) {
 		case "reference": {
-			const filledArgs = t.args?.map((a) => fillTypeParamDefaults(a, globalDecls, globalOrigins));
+			const filledArgs = t.args?.map((a) =>
+				fillTypeParamDefaults(a, globalDecls, globalOrigins),
+			);
 			// Strip module qualifier to get the bare type name for lookup
 			const dot = t.name.lastIndexOf(".");
 			const baseName = dot !== -1 ? t.name.slice(dot + 1) : t.name;
@@ -328,7 +336,11 @@ function fillTypeParamDefaults(
 				indexer: t.indexer
 					? {
 							key: fillTypeParamDefaults(t.indexer.key, globalDecls, globalOrigins),
-							value: fillTypeParamDefaults(t.indexer.value, globalDecls, globalOrigins),
+							value: fillTypeParamDefaults(
+								t.indexer.value,
+								globalDecls,
+								globalOrigins,
+							),
 						}
 					: undefined,
 			};
@@ -344,7 +356,9 @@ function fillTypeParamDefaults(
 		case "tuple":
 			return {
 				kind: "tuple",
-				elements: t.elements.map((e) => fillTypeParamDefaults(e, globalDecls, globalOrigins)),
+				elements: t.elements.map((e) =>
+					fillTypeParamDefaults(e, globalDecls, globalOrigins),
+				),
 			};
 		case "keyof":
 			return {
@@ -390,12 +404,11 @@ export function annotateFile(
 	filePath: string,
 	manifest: TypeManifest,
 	rojoProject: string,
-	lumineFilePath: string,
+	_lumineFilePath: string,
 	cwd: string,
 	globalTypeOrigins: Map<string, string> = new Map(),
 	globalTypeDecls: Map<string, TypeDecl> = new Map(),
 ): AnnotationResult & { source: string } {
-	const knownTypes = new Set(Object.keys(manifest.types));
 	let annotated = 0;
 	let skipped = 0;
 	let usesBuiltins = false;
@@ -498,14 +511,16 @@ export function annotateFile(
 		const lines: string[] = [INLINE_SENTINEL];
 
 		if (needsLumine) {
-			// Re-use an existing Lumine var if rbxtsc already emitted one
+			// Re-use an existing Lumine var if rbxtsc already emitted one.
+			// Otherwise import Lumine's exported utility types without requiring
+			// the module at runtime.
 			const existingLumine = result.match(/^local Lumine = [^\n]+/m);
-			lines.push(existingLumine ? "local _Lumine = Lumine" : buildLumineRequire());
+			lines.push(existingLumine ? "type _Lumine = typeof(Lumine)" : buildLumineTypeImport());
 		}
 
 		for (const [sourcePath, group] of requireGroups) {
 			lines.push(
-				`local ${group.localVar} = ${buildModuleRequire(rojoProject, sourcePath, filePath, cwd)}`,
+				`type ${group.localVar} = typeof(${buildModuleRequire(rojoProject, sourcePath, filePath, cwd)})`,
 			);
 		}
 
@@ -555,6 +570,8 @@ function stripOldLumineBlock(src: string): string {
 			line === "" ||
 			line.startsWith("local _Lumine") ||
 			line.startsWith("local _Types_") ||
+			line.startsWith("type _Lumine") ||
+			line.startsWith("type _Types_") ||
 			line.startsWith("local Lumine =") ||
 			line.startsWith("export type ") ||
 			line.startsWith("-- [lumine]");
@@ -619,7 +636,11 @@ function remapType(t: LuauType, aliases: Map<string, string>): LuauType {
  * Only qualifies names that are known external types (present in globalOrigins)
  * so generic type params (T, K, V) are left untouched.
  */
-function qualifyBareRefs(t: LuauType, qualifier: string, globalOrigins: Map<string, string>): LuauType {
+function qualifyBareRefs(
+	t: LuauType,
+	qualifier: string,
+	globalOrigins: Map<string, string>,
+): LuauType {
 	switch (t.kind) {
 		case "reference": {
 			const shouldQualify =
@@ -657,7 +678,10 @@ function qualifyBareRefs(t: LuauType, qualifier: string, globalOrigins: Map<stri
 		case "function":
 			return {
 				kind: "function",
-				params: t.params.map((p) => ({ ...p, type: qualifyBareRefs(p.type, qualifier, globalOrigins) })),
+				params: t.params.map((p) => ({
+					...p,
+					type: qualifyBareRefs(p.type, qualifier, globalOrigins),
+				})),
 				returns: qualifyBareRefs(t.returns, qualifier, globalOrigins),
 			};
 		case "tuple":

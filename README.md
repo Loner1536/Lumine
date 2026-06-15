@@ -67,10 +67,10 @@ export type Player = {
 }
 ```
 
-**`game.luau`** — function signatures annotated, cross-file require added:
+**`game.luau`** — function signatures annotated, cross-file type import added:
 ```lua
 -- [lumine types]
-local _Types = require(...)  -- resolves to types.luau via Rojo
+type _Types = typeof(require(...))  -- resolves to types.luau via Rojo without a runtime require
 
 local function getPlayer(userId: number): _Types.Result<_Types.Player, string>
     ...
@@ -324,8 +324,10 @@ Lumine writes `Lumine.lua` into your include folder next to `RuntimeLib.lua`. It
 When a function in `game.luau` uses a type declared in `types.luau`, Lumine:
 
 1. Emits `export type Foo = ...` declarations into the file that owns them (`types.luau`).
-2. Injects a `local _Types_xxx = require(...)` at the top of the referencing file.
+2. Injects a `type _Types_xxx = typeof(require(...))` alias at the top of the referencing file.
 3. Qualifies all cross-file type references: `Foo` → `_Types_xxx.Foo`.
+
+The generated alias is type-only. Luau does not evaluate the `typeof(...)` expression at runtime, so type annotations cannot introduce module load cycles.
 
 Rojo path resolution is used for the require path when a `default.project.json` is present.
 
