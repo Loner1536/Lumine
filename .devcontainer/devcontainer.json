@@ -10,7 +10,6 @@
 	"overrideCommand": true,
 	"remoteUser": "root",
 	"init": true,
-	"runArgs": ["-p", "34872:34872"],
 	"containerEnv": {
 		"NODE_ENV": "development"
 	},
