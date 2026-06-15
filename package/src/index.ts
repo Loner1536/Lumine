@@ -18,6 +18,7 @@ Usage:
   lumine               Run once — annotate all .luau files in outDir
   lumine -w, --watch   Watch mode — re-annotate on .luau changes
   lumine --dry-run     Show what would be annotated without writing
+  lumine --verbose     Show per-file annotation logs
   lumine -v, --version Print version
   lumine -h, --help    Show this help`);
 }
@@ -95,13 +96,17 @@ function getIgnoredDirs(outDir: string, includeDir: string): Set<string> {
 
 // ── Lumine.lua generation ─────────────────────────────────────────────────────
 
-function ensureLumineFile(lumineFilePath: string, dryRun: boolean): void {
+function ensureLumineFile(
+    lumineFilePath: string,
+    dryRun: boolean,
+    log: (...args: Parameters<typeof console.log>) => void,
+): void {
     const content = generateLumineFile();
     if (hashString(content) === hashFile(lumineFilePath)) return;
     if (!dryRun) {
         mkdirSync(dirname(lumineFilePath), { recursive: true });
         writeFileSync(lumineFilePath, content, "utf-8");
-        console.log(`[lumine] wrote ${lumineFilePath}`);
+        log(`[lumine] wrote ${lumineFilePath}`);
     }
 }
 
@@ -109,6 +114,7 @@ function ensureLumineFile(lumineFilePath: string, dryRun: boolean): void {
 
 interface RunContext {
     dryRun?: boolean;
+    verbose?: boolean;
     fileCache?: Map<string, FileCache>;
     manifestCache?: Map<string, ManifestCache>;
     diskHashes?: Map<string, string>;
@@ -118,19 +124,20 @@ async function run(ctx: RunContext = {}) {
     const cwd = process.cwd();
     const config = loadConfig(cwd);
     const { outDir, declaration, rojoProject, includeDir } = config;
-    const { dryRun = false, fileCache, manifestCache, diskHashes } = ctx;
+    const { dryRun = false, verbose = false, fileCache, manifestCache, diskHashes } = ctx;
     const lumineFilePath = join(includeDir, "Lumine.lua");
     const ignoredDirs = getIgnoredDirs(outDir, includeDir);
+    const log = (...args: Parameters<typeof console.log>) => { if (verbose) console.log(...args); };
 
     if (!existsSync(outDir)) {
         console.error(`[lumine] error: outDir "${outDir}" does not exist — run your compiler first`);
         process.exit(1);
     }
 
-    ensureLumineFile(lumineFilePath, dryRun);
+    ensureLumineFile(lumineFilePath, dryRun, log);
 
     const luauFiles = walkLuau(outDir, ignoredDirs).filter(f => f !== lumineFilePath);
-    if (luauFiles.length === 0) { console.log("[lumine] no .luau files found"); return; }
+    if (luauFiles.length === 0) { log("[lumine] no .luau files found"); return; }
 
     // ── Phase 1: Extract manifests ────────────────────────────────────────────
     const manifests = new Map<string, TypeManifest>();
@@ -155,7 +162,7 @@ async function run(ctx: RunContext = {}) {
             manifests.set(luauPath, manifest);
         }
         if (dtsChangedCount > 0) {
-            console.log(`[lumine] ${dtsChangedCount} .d.ts changed, ${manifests.size - dtsChangedCount} cached`);
+            log(`[lumine] ${dtsChangedCount} .d.ts changed, ${manifests.size - dtsChangedCount} cached`);
         }
     }
 
@@ -208,12 +215,12 @@ async function run(ctx: RunContext = {}) {
                 diskHashes?.set(luauPath, outputHash);
             }
             if (result.annotated > 0) {
-                console.log(
+                log(
                     `[lumine] ${relative(cwd, luauPath)} — ${result.annotated} annotated` +
                     (result.skipped > 0 ? `, ${result.skipped} skipped` : ""),
                 );
             } else {
-                console.log(`[lumine] ${relative(cwd, luauPath)} — types injected`);
+                log(`[lumine] ${relative(cwd, luauPath)} — types injected`);
             }
         } else {
             diskHashes?.set(luauPath, srcHash);
@@ -237,9 +244,9 @@ async function run(ctx: RunContext = {}) {
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
-async function runOnce(dryRun = false) { await run({ dryRun }); }
+async function runOnce(dryRun = false, verbose = false) { await run({ dryRun, verbose }); }
 
-async function runWatch() {
+async function runWatch(verbose = false) {
     const cwd = process.cwd();
     const { outDir, includeDir } = loadConfig(cwd);
     const ignoredDirs = getIgnoredDirs(outDir, includeDir);
@@ -250,11 +257,13 @@ async function runWatch() {
 
     console.log(`[lumine] watching ${outDir} for changes...`);
 
-    // Run once immediately so existing files are annotated on startup.
-    // diskHashes is populated by this run, so only genuine rbxtsc output
-    // (different content) triggers a second pass.
+    // Initial pass: annotate everything rbxtsc has already compiled so we're
+    // in sync from the start. run() populates diskHashes for each file it
+    // touches, so the poll below only fires on genuinely new rbxtsc writes.
+    // If outDir doesn't exist yet (rbxtsc hasn't done its first build), skip —
+    // the poll will catch the first batch of files once they appear.
     if (existsSync(outDir)) {
-        await run({ fileCache, manifestCache, diskHashes });
+        await run({ fileCache, manifestCache, diskHashes, verbose });
     }
 
     let running = false;
@@ -267,14 +276,12 @@ async function runWatch() {
 
         // 800ms quiet-period: rbxtsc writes multiple files incrementally;
         // firing after the first write would annotate a half-written output.
-        // We don't reset the timer on subsequent writes — lumine fires once,
-        // ~800ms after rbxtsc starts writing, regardless of how many files changed.
         debounceTimer = setTimeout(async () => {
             if (running) return;
             running = true;
             console.log(`\n[lumine] change detected — re-annotating...`);
             try {
-                await run({ fileCache, manifestCache, diskHashes });
+                await run({ fileCache, manifestCache, diskHashes, verbose });
             } finally {
                 running = false;
                 debounceTimer = null;
@@ -291,8 +298,9 @@ async function runWatch() {
 }
 
 const args = process.argv.slice(2);
+const verbose = args.includes("--verbose");
 if (args.includes("--help") || args.includes("-h")) printHelp();
 else if (args.includes("--version") || args.includes("-v")) console.log(VERSION);
-else if (args.includes("--watch") || args.includes("-w")) runWatch();
-else if (args.includes("--dry-run")) runOnce(true);
-else runOnce();
+else if (args.includes("--watch") || args.includes("-w")) runWatch(verbose);
+else if (args.includes("--dry-run")) runOnce(true, verbose);
+else runOnce(false, verbose);

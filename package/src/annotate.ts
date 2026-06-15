@@ -264,13 +264,19 @@ function injectAtTop(src: string, block: string): string {
  * Looks up by base name after stripping any `_Types_xxx.` qualifier so this
  * works correctly on already-remapped cross-file references.
  */
-function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>): LuauType {
+function fillTypeParamDefaults(
+	t: LuauType,
+	globalDecls: Map<string, TypeDecl>,
+	globalOrigins?: Map<string, string>,
+): LuauType {
 	switch (t.kind) {
 		case "reference": {
-			const filledArgs = t.args?.map((a) => fillTypeParamDefaults(a, globalDecls));
+			const filledArgs = t.args?.map((a) => fillTypeParamDefaults(a, globalDecls, globalOrigins));
 			// Strip module qualifier to get the bare type name for lookup
 			const dot = t.name.lastIndexOf(".");
 			const baseName = dot !== -1 ? t.name.slice(dot + 1) : t.name;
+			// The qualifier prefix of this reference (e.g. "_Types_9aa91235.")
+			const qualifier = dot !== -1 ? t.name.slice(0, dot + 1) : "";
 			const decl = globalDecls.get(baseName);
 			if (decl && decl.typeParamDefaults.length > 0) {
 				const provided = filledArgs?.length ?? 0;
@@ -278,7 +284,15 @@ function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>):
 				if (provided < needed) {
 					const extra: LuauType[] = [];
 					for (let i = provided; i < needed; i++) {
-						extra.push(decl.typeParamDefaults[i] ?? LuauAny);
+						const rawDefault = decl.typeParamDefaults[i] ?? LuauAny;
+						// Defaults are stored as bare refs from the origin file — when the
+						// parent type is a cross-file qualified ref, apply the same qualifier
+						// to any bare external names in the default so they resolve correctly.
+						extra.push(
+							qualifier && globalOrigins
+								? qualifyBareRefs(rawDefault, qualifier, globalOrigins)
+								: rawDefault,
+						);
 					}
 					return {
 						kind: "reference",
@@ -290,28 +304,31 @@ function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>):
 			return { kind: "reference", name: t.name, args: filledArgs };
 		}
 		case "optional":
-			return { kind: "optional", inner: fillTypeParamDefaults(t.inner, globalDecls) };
+			return {
+				kind: "optional",
+				inner: fillTypeParamDefaults(t.inner, globalDecls, globalOrigins),
+			};
 		case "union":
 			return {
 				kind: "union",
-				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls)),
+				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls, globalOrigins)),
 			};
 		case "intersection":
 			return {
 				kind: "intersection",
-				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls)),
+				members: t.members.map((m) => fillTypeParamDefaults(m, globalDecls, globalOrigins)),
 			};
 		case "table":
 			return {
 				kind: "table",
 				fields: t.fields.map((f) => ({
 					...f,
-					type: fillTypeParamDefaults(f.type, globalDecls),
+					type: fillTypeParamDefaults(f.type, globalDecls, globalOrigins),
 				})),
 				indexer: t.indexer
 					? {
-							key: fillTypeParamDefaults(t.indexer.key, globalDecls),
-							value: fillTypeParamDefaults(t.indexer.value, globalDecls),
+							key: fillTypeParamDefaults(t.indexer.key, globalDecls, globalOrigins),
+							value: fillTypeParamDefaults(t.indexer.value, globalDecls, globalOrigins),
 						}
 					: undefined,
 			};
@@ -320,17 +337,20 @@ function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>):
 				kind: "function",
 				params: t.params.map((p) => ({
 					...p,
-					type: fillTypeParamDefaults(p.type, globalDecls),
+					type: fillTypeParamDefaults(p.type, globalDecls, globalOrigins),
 				})),
-				returns: fillTypeParamDefaults(t.returns, globalDecls),
+				returns: fillTypeParamDefaults(t.returns, globalDecls, globalOrigins),
 			};
 		case "tuple":
 			return {
 				kind: "tuple",
-				elements: t.elements.map((e) => fillTypeParamDefaults(e, globalDecls)),
+				elements: t.elements.map((e) => fillTypeParamDefaults(e, globalDecls, globalOrigins)),
 			};
 		case "keyof":
-			return { kind: "keyof", inner: fillTypeParamDefaults(t.inner, globalDecls) };
+			return {
+				kind: "keyof",
+				inner: fillTypeParamDefaults(t.inner, globalDecls, globalOrigins),
+			};
 		default:
 			return t;
 	}
@@ -434,6 +454,7 @@ export function annotateFile(
 			const remapped = fillTypeParamDefaults(
 				remapType(param.type, typeAliasMap),
 				globalTypeDecls,
+				globalTypeOrigins,
 			);
 			if (typeUsesBuiltins(remapped)) usesBuiltins = true;
 
@@ -443,6 +464,7 @@ export function annotateFile(
 		const remappedReturn = fillTypeParamDefaults(
 			remapType(sig.returnType, typeAliasMap),
 			globalTypeDecls,
+			globalTypeOrigins,
 		);
 		if (typeUsesBuiltins(remappedReturn)) usesBuiltins = true;
 		const returnAnnotation = printReturn(remappedReturn);
@@ -583,6 +605,68 @@ function remapType(t: LuauType, aliases: Map<string, string>): LuauType {
 			return { kind: "tuple", elements: t.elements.map((e) => remapType(e, aliases)) };
 		case "keyof":
 			return { kind: "keyof", inner: remapType(t.inner, aliases) };
+		default:
+			return t;
+	}
+}
+
+/**
+ * Walk a LuauType and prefix any bare PascalCase reference names that exist in
+ * globalOrigins with the given qualifier (e.g. "_Types_9aa91235.").
+ *
+ * Used to fix up default type arguments that were stored as bare names from
+ * their origin file but need module qualification in the consumer file.
+ * Only qualifies names that are known external types (present in globalOrigins)
+ * so generic type params (T, K, V) are left untouched.
+ */
+function qualifyBareRefs(t: LuauType, qualifier: string, globalOrigins: Map<string, string>): LuauType {
+	switch (t.kind) {
+		case "reference": {
+			const shouldQualify =
+				!t.name.includes(".") && /^[A-Z]/.test(t.name) && globalOrigins.has(t.name);
+			const name = shouldQualify ? `${qualifier}${t.name}` : t.name;
+			const args = t.args?.map((a) => qualifyBareRefs(a, qualifier, globalOrigins));
+			return { kind: "reference", name, args };
+		}
+		case "optional":
+			return { kind: "optional", inner: qualifyBareRefs(t.inner, qualifier, globalOrigins) };
+		case "union":
+			return {
+				kind: "union",
+				members: t.members.map((m) => qualifyBareRefs(m, qualifier, globalOrigins)),
+			};
+		case "intersection":
+			return {
+				kind: "intersection",
+				members: t.members.map((m) => qualifyBareRefs(m, qualifier, globalOrigins)),
+			};
+		case "table":
+			return {
+				kind: "table",
+				fields: t.fields.map((f) => ({
+					...f,
+					type: qualifyBareRefs(f.type, qualifier, globalOrigins),
+				})),
+				indexer: t.indexer
+					? {
+							key: qualifyBareRefs(t.indexer.key, qualifier, globalOrigins),
+							value: qualifyBareRefs(t.indexer.value, qualifier, globalOrigins),
+						}
+					: undefined,
+			};
+		case "function":
+			return {
+				kind: "function",
+				params: t.params.map((p) => ({ ...p, type: qualifyBareRefs(p.type, qualifier, globalOrigins) })),
+				returns: qualifyBareRefs(t.returns, qualifier, globalOrigins),
+			};
+		case "tuple":
+			return {
+				kind: "tuple",
+				elements: t.elements.map((e) => qualifyBareRefs(e, qualifier, globalOrigins)),
+			};
+		case "keyof":
+			return { kind: "keyof", inner: qualifyBareRefs(t.inner, qualifier, globalOrigins) };
 		default:
 			return t;
 	}

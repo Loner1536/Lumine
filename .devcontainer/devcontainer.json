@@ -4,7 +4,7 @@
 		"dockerfile": "Dockerfile",
 		"context": ".."
 	},
-	"postCreateCommand": "rokit install --no-trust-check && bun install --force",
+	"postCreateCommand": "bash .devcontainer/scripts/post.sh",
 	"shutdownAction": "stopContainer",
 	"updateRemoteUserUID": false,
 	"overrideCommand": true,
@@ -29,6 +29,7 @@
 		}
 	],
 	"forwardPorts": ["34872"],
+	"appPort": [34872],
 	"customizations": {
 		"vscode": {
 			"settings": {

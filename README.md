@@ -159,54 +159,159 @@ lumine -h, --help       Show help
 
 ## Type mappings
 
+All mappings below are verified against actual compiler output (`playground/out/src/shared/test.luau`).
+
+### Primitives
+
 | TypeScript | Luau |
 |---|---|
-| `string \| undefined` | `string?` |
-| `A \| B` | `A \| B` |
+| `number` | `number` |
+| `string` | `string` |
+| `boolean` | `boolean` |
+| `buffer` | `buffer` |
+| `void` (return) | no annotation (bare `()`) |
+| `undefined` / `null` | `nil` |
+| `any` | `any` |
+| `unknown` | `any` |
+| `never` | `never` |
+
+### Optional / nullable
+
+| TypeScript | Luau |
+|---|---|
+| `T \| undefined` | `T?` |
+| `T \| null` | `T?` |
+| `T \| null \| undefined` | `T?` |
+| `NonNullable<T>` | `T` (nil stripped) |
+
+### Unions and intersections
+
+| TypeScript | Luau |
+|---|---|
+| `A \| B \| C` | `A \| B \| C` |
 | `A & B` | `A & B` |
-| `Array<T>` / `T[]` | `{T}` |
+
+### Collections
+
+| TypeScript | Luau |
+|---|---|
+| `T[]` / `Array<T>` | `{[number]: T}` |
+| `ReadonlyArray<T>` | `{[number]: T}` (Readonly stripped) |
 | `Map<K, V>` / `Record<K, V>` | `{[K]: V}` |
+| `ReadonlyMap<K, V>` | `{[K]: V}` (Readonly stripped) |
 | `Set<T>` | `{[T]: boolean}` |
-| `Readonly<T>` | `T` (stripped) |
-| `NonNullable<T>` | `T` (strips optional) |
+| `ReadonlySet<T>` | `{[T]: boolean}` (Readonly stripped) |
+| `{ [key: string]: T }` index sig | `{[string]: T}` |
+| `{ [key: number]: T }` index sig | `{[number]: T}` |
+
+### Functions and parameters
+
+| TypeScript | Luau |
+|---|---|
+| `(a: A, b: B) => C` | `(a: A, b: B) -> C` |
+| `() => void` | `() -> ()` |
+| `param?: T` optional param | `param: T?` |
+| `...args: T[]` rest param | `...: T` (element type, not array) |
+
+### Generics
+
+| TypeScript | Luau |
+|---|---|
+| `<T>` / `<T, U>` | `<T>` / `<T, U>` (pass-through) |
+| `<T extends string>` constraint | `<T>` (constraint stripped) |
+| `keyof T` | `keyof<T>` |
+
+### Literal types
+
+| TypeScript | Luau |
+|---|---|
+| `"a" \| "b"` string singletons | `"a" \| "b"` |
+| `true` / `false` boolean singletons | `true` / `false` |
+| `0 \| 1 \| 2` number literals | `number` (collapse — no number singletons in Luau) |
+
+### Object types and interfaces
+
+| TypeScript | Luau |
+|---|---|
+| `interface Foo { a: number; b?: string }` | `export type Foo = { a: number, b: string? }` |
+| `interface Foo<T> { value: T }` | `export type Foo<T> = { value: T }` |
+| `Readonly<T>` | `T` (Readonly stripped, Luau has no equivalent) |
+| `Namespace.Type<T>` | `Namespace_Type<T>` (underscore-joined, exported inline) |
+
+### roblox-ts specific
+
+| TypeScript | Luau |
+|---|---|
+| `LuaTuple<[T, U]>` | `(T, U)` multi-return |
+| `LuaTuple<[T, U?]>` | `(T, U?)` multi-return with optional |
+| `Promise<T>` | `_Lumine.Promise<T>` |
+| `Promise<void>` | `_Lumine.Promise<nil>` |
+| `Promise<null>` / `Promise<undefined>` | `_Lumine.Promise<nil>` |
+| `Promise<Promise<T>>` | `_Lumine.Promise<_Lumine.Promise<T>>` |
+| Roblox types (`RBXScriptSignal`, `Vector3`, `Player`, …) | passed through as-is |
+
+### Utility types via `Lumine.lua`
+
+These are implemented as [Luau type functions](https://luau.org/typefunction) in `Lumine.lua` and referenced as `_Lumine.*`:
+
+| TypeScript | Luau |
+|---|---|
 | `Partial<T>` | `_Lumine.Partial<T>` |
 | `Required<T>` | `_Lumine.Required<T>` |
-| `ReturnType<T>` | `_Lumine.ReturnType<T>` |
-| `Parameters<T>` | `_Lumine.Parameters<T>` |
 | `Pick<T, K>` | `_Lumine.Pick<T, K>` |
 | `Omit<T, K>` | `_Lumine.Omit<T, K>` |
-| `Promise<void>` | `_Lumine.Promise<nil>` |
-| `Promise<T>` | `_Lumine.Promise<T>` |
-| `LuaTuple<[T, U]>` | `(T, U)` multi-return |
-| `keyof T` | `keyof<T>` |
-| `T extends X ? A : B` | `A & B` (intersection of branches) |
-| `...args: T[]` | `...: T` (element type) |
-| `"hello" \| "world"` | `"hello" \| "world"` (string singletons) |
-| `true \| false` | `true \| false` (boolean singletons) |
-| `0 \| 1 \| 2` | `number` (number literals collapse) |
-| mapped type | `any` |
-| template literal | `string` |
-| `infer` | `any` |
+| `ReturnType<T>` | `_Lumine.ReturnType<T>` |
+| `Parameters<T>` | `_Lumine.Parameters<T>` |
+| `Awaited<T>` | `_Lumine.Awaited<T>` |
+| `Extract<T, U>` | `_Lumine.Extract<T, U>` |
+| `Exclude<T, U>` | `_Lumine.Exclude<T, U>` |
+| `NoInfer<T>` | `_Lumine.NoInfer<T>` (identity) |
+| `Unpack<T>` (custom) | `_Lumine.Unpack<T>` |
+
+### Approximate / lossy conversions
+
+These are valid Luau but lose some TypeScript precision:
+
+| TypeScript | Luau | Notes |
+|---|---|---|
+| `T extends X ? A : B` | `A & B` | All conditional branches intersected |
+| `[A, B, C]` plain tuple | `A \| B \| C` | No tuple type in Luau; union of member types |
+
+### Not representable (fallback to `any` or `string`)
+
+| TypeScript | Luau | Notes |
+|---|---|---|
+| `{ [K in keyof T]?: T[K] }` mapped type | `any` | No mapped types in Luau |
+| `` `on${string}` `` template literal | `string` | No template literal types in Luau |
+| `T[K]` indexed access | `any` | Not supported |
+| `typeof X` in type position | `any` | Not supported |
+| `infer U` | `any` | No `infer` in Luau |
 
 ### Default type parameters
 
 TypeScript default type params are filled in automatically. If `Result<T, E = string>` is declared and used as `Result<Player>`, Lumine emits `Result<Player, string>` — keeping Luau's type arity correct since Luau has no equivalent of default type params.
 
+The `this: void` parameter emitted by rbxtsc is silently skipped and does not affect parameter matching.
+
 ---
 
 ## Builtin utility types (`Lumine.lua`)
 
-Lumine writes `Lumine.lua` into your include folder. It implements utility types as [Luau type functions](https://luau.org/typefunction):
+Lumine writes `Lumine.lua` into your include folder next to `RuntimeLib.lua`. It implements utility types as [Luau type functions](https://luau.org/typefunction):
 
 | Type | Behaviour |
 |---|---|
 | `_Lumine.Partial<T>` | Makes all table properties optional |
 | `_Lumine.Required<T>` | Removes `nil` / optional from all properties |
 | `_Lumine.Pick<T, K>` | Keeps only properties whose key is in `K` |
-| `_Lumine.Omit<T, K>` | Drops properties whose key is in `K` |
+| `_Lumine.Omit<T, K>` | Drops all properties whose key is in `K` |
 | `_Lumine.ReturnType<T>` | Extracts the return type of a function |
 | `_Lumine.Parameters<T>` | Extracts function parameters as a table type |
 | `_Lumine.Unpack<T>` | Extracts the element type of an array table |
+| `_Lumine.Awaited<T>` | Unwraps `Promise<X>` to `X` via the `expect` method return type |
+| `_Lumine.Extract<T, U>` | Keeps union members structurally assignable to `U` |
+| `_Lumine.Exclude<T, U>` | Removes union members structurally assignable to `U` |
+| `_Lumine.NoInfer<T>` | Identity — TypeScript inference hint, no Luau equivalent |
 | `_Lumine.Promise<T>` | Structural type matching the roblox-ts Promise runtime |
 
 ---

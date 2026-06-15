@@ -8,6 +8,10 @@ export const LUMINE_BUILTIN_NAMES = new Set([
     "Pick",
     "Omit",
     "Parameters",
+    "NoInfer",
+    "Awaited",
+    "Extract",
+    "Exclude",
     "Promise", // roblox-ts Promise -- typed structural definition emitted in generated.types.luau
 ]);
 
@@ -148,6 +152,112 @@ export type function Omit(T, K)
         end
     end
     return result
+end
+
+-- NoInfer<T>: TypeScript inference hint — no Luau equivalent, transparent identity
+export type function NoInfer(T)
+    return T
+end
+
+-- Awaited<T>: unwrap Promise<X> → X by reading the return type of the "expect" method
+-- Promise<T> defines: expect: (self: Promise<T>) -> T
+export type function Awaited(T)
+    if not T:is("table") then return T end
+    for key, prop in T:properties() do
+        if key:is("singleton") and key:value() == "expect" and prop.read then
+            local fn = prop.read
+            if fn:is("function") then
+                local rets = fn:returns()
+                if rets.head and #rets.head >= 1 then
+                    return rets.head[1]
+                end
+            end
+        end
+    end
+    return T
+end
+
+-- Extract<T, U>: from union T keep only members structurally assignable to U
+-- Uses structural kind matching (types.issubtype is not in the released API).
+export type function Extract(T, U)
+    local function assignableTo(src, target)
+        if target:is("unknown") or target:is("any") then return true end
+        if src:is("never") or src:is("any") then return true end
+        for _, kind in {"boolean", "number", "string", "nil", "thread", "buffer"} do
+            if src:is(kind) and target:is(kind) then return true end
+        end
+        if src:is("singleton") then
+            local v = src:value()
+            if type(v) == "string" and target:is("string") then return true end
+            if type(v) == "boolean" and target:is("boolean") then return true end
+            if type(v) == "number" and target:is("number") then return true end
+            if target:is("singleton") then return v == target:value() end
+            return false
+        end
+        if src:is("table") and target:is("table") then return true end
+        if src:is("function") and target:is("function") then return true end
+        if target:is("union") then
+            for _, comp in target:components() do
+                if assignableTo(src, comp) then return true end
+            end
+            return false
+        end
+        return false
+    end
+    if not T:is("union") then
+        if assignableTo(T, U) then return T end
+        return types.never
+    end
+    local kept = {}
+    for _, component in T:components() do
+        if assignableTo(component, U) then
+            table.insert(kept, component)
+        end
+    end
+    if #kept == 0 then return types.never end
+    if #kept == 1 then return kept[1] end
+    return types.unionof(table.unpack(kept))
+end
+
+-- Exclude<T, U>: from union T remove members structurally assignable to U
+export type function Exclude(T, U)
+    local function assignableTo(src, target)
+        if target:is("unknown") or target:is("any") then return true end
+        if src:is("never") or src:is("any") then return true end
+        for _, kind in {"boolean", "number", "string", "nil", "thread", "buffer"} do
+            if src:is(kind) and target:is(kind) then return true end
+        end
+        if src:is("singleton") then
+            local v = src:value()
+            if type(v) == "string" and target:is("string") then return true end
+            if type(v) == "boolean" and target:is("boolean") then return true end
+            if type(v) == "number" and target:is("number") then return true end
+            if target:is("singleton") then return v == target:value() end
+            return false
+        end
+        if src:is("table") and target:is("table") then return true end
+        if src:is("function") and target:is("function") then return true end
+        if target:is("union") then
+            for _, comp in target:components() do
+                if assignableTo(src, comp) then return true end
+            end
+            return false
+        end
+        return false
+    end
+    if not T:is("union") then
+        if assignableTo(T, U) then return types.never end
+        return T
+    end
+    local kept = {}
+    for _, component in T:components() do
+        if not assignableTo(component, U) then
+            table.insert(kept, component)
+        end
+    end
+    if #kept == 0 then return types.never end
+    if #kept == 1 then return kept[1] end
+    return types.unionof(table.unpack(kept))
 end
 
 -- Promise: structural type for the roblox-ts / evaera Promise runtime.
