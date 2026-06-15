@@ -39,7 +39,7 @@ export interface LuauFnParam {
     name: string;
     type: LuauType;
     optional: boolean;
-    rest: boolean; // true → emit as ...: T
+    rest: boolean;
 }
 
 // ── Constant singletons ───────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
 }
 
 function printFnParam(p: LuauFnParam, depth: number): string {
-    if (p.rest) return `...: ${printLuauType(p.type, depth + 1, true)}`;
+    if (p.rest) return `...${printLuauType(p.type, depth + 1, true)}`;
     const opt = p.optional ? "?" : "";
     return `${p.name}: ${printLuauType(p.type, depth + 1, true)}${opt}`;
 }
