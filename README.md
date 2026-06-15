@@ -174,6 +174,9 @@ All mappings below are verified against actual compiler output (`playground/out/
 | `any` | `any` |
 | `unknown` | `any` |
 | `never` | `never` |
+| `object` | `any` |
+| `bigint` | `number` |
+| `symbol` | `any` |
 
 ### Optional / nullable
 
@@ -274,7 +277,7 @@ These are valid Luau but lose some TypeScript precision:
 
 | TypeScript | Luau | Notes |
 |---|---|---|
-| `T extends X ? A : B` | `A & B` | All conditional branches intersected |
+| `T extends X ? A : B` | `A & B` | All conditional branches intersected; falls back to `any` if the conditional contains `infer` |
 | `[A, B, C]` plain tuple | `A \| B \| C` | No tuple type in Luau; union of member types |
 
 ### Not representable (fallback to `any` or `string`)
@@ -285,7 +288,7 @@ These are valid Luau but lose some TypeScript precision:
 | `` `on${string}` `` template literal | `string` | No template literal types in Luau |
 | `T[K]` indexed access | `any` | Not supported |
 | `typeof X` in type position | `any` | Not supported |
-| `infer U` | `any` | No `infer` in Luau |
+| `T extends Array<infer U> ? U : never` | `any` | Conditionals containing `infer` fall back to `any` |
 
 ### Default type parameters
 
