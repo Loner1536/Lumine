@@ -1,4 +1,4 @@
-import { resolve, relative, dirname } from "path";
+import { resolve, relative, dirname, basename } from "path";
 import { existsSync, readFileSync } from "fs";
 
 interface RojoNode {
@@ -45,21 +45,24 @@ const ROBLOX_SERVICES = new Set([
  */
 export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
 	const fromDir = dirname(fromFilePath);
+	const fromBase = basename(fromFilePath)
+		.replace(/\.luau?$/, "")
+		.replace(/\.ts$/, "");
+	const isInit = fromBase === "init" || fromBase === "index";
+
 	const rel = relative(fromDir, toFilePath)
 		.replace(/\\/g, "/")
 		.replace(/\.luau?$/, "");
 
-	// rel is something like "../../net/Bar" or "Bar" or "../Bar"
 	const parts = rel.split("/");
-	let path = "script";
+	// init.luau's `script` IS the folder, so no initial .Parent needed
+	let path = isInit ? "script" : "script.Parent";
 
 	for (const part of parts) {
 		if (part === "..") {
 			path += ".Parent";
-		} else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
-			path += `.${part}`;
 		} else {
-			path += `["${part}"]`;
+			path += `:WaitForChild("${part}")`;
 		}
 	}
 
