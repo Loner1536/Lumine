@@ -1,114 +1,148 @@
+import { resolve, relative, dirname } from "path";
 import { existsSync, readFileSync } from "fs";
-import { resolve, relative } from "path";
 
 interface RojoNode {
-    $path?: string;
-    $className?: string;
-    [key: string]: unknown;
+	$path?: string;
+	$className?: string;
+	[key: string]: unknown;
 }
 
 interface PathMapping {
-    fsPath: string;
-    service: string;
-    segments: string[];
+	fsPath: string;
+	service: string;
+	segments: string[];
 }
 
 const ROBLOX_SERVICES = new Set([
-    "Workspace",
-    "Players",
-    "Lighting",
-    "ReplicatedFirst",
-    "ReplicatedStorage",
-    "ServerScriptService",
-    "ServerStorage",
-    "StarterGui",
-    "StarterPack",
-    "StarterPlayer",
-    "SoundService",
-    "Chat",
-    "LocalizationService",
-    "TestService",
-    "HttpService",
-    "RunService",
+	"Workspace",
+	"Players",
+	"Lighting",
+	"ReplicatedFirst",
+	"ReplicatedStorage",
+	"ServerScriptService",
+	"ServerStorage",
+	"StarterGui",
+	"StarterPack",
+	"StarterPlayer",
+	"SoundService",
+	"Chat",
+	"LocalizationService",
+	"TestService",
+	"HttpService",
+	"RunService",
 ]);
 
+/**
+ * Build a require() using only relative script-tree navigation.
+ * Used as a fallback when no .project.json exists.
+ *
+ * e.g. from  out/shared/Foo.luau
+ *      to    out/net/Bar.luau
+ * →  require(script.Parent.Parent.net.Bar)
+ *
+ * @param fromFilePath  absolute path of the file doing the requiring
+ * @param toFilePath    absolute path of the module being required
+ */
+export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
+	const fromDir = dirname(fromFilePath);
+	const rel = relative(fromDir, toFilePath)
+		.replace(/\\/g, "/")
+		.replace(/\.luau?$/, "");
+
+	// rel is something like "../../net/Bar" or "Bar" or "../Bar"
+	const parts = rel.split("/");
+	let path = "script";
+
+	for (const part of parts) {
+		if (part === "..") {
+			path += ".Parent";
+		} else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) {
+			path += `.${part}`;
+		} else {
+			path += `["${part}"]`;
+		}
+	}
+
+	return `require(${path})`;
+}
+
 function walkTree(node: RojoNode, path: string[], mappings: PathMapping[], cwd: string): void {
-    for (const [key, value] of Object.entries(node)) {
-        if (key.startsWith("$") || typeof value !== "object" || value === null) continue;
-        const child = value as RojoNode;
-        const childPath = [...path, key];
+	for (const [key, value] of Object.entries(node)) {
+		if (key.startsWith("$") || typeof value !== "object" || value === null) continue;
+		const child = value as RojoNode;
+		const childPath = [...path, key];
 
-        if (child.$path) {
-            const fsPath = resolve(cwd, child.$path);
-            const service = childPath.find((p) => ROBLOX_SERVICES.has(p)) ?? childPath[0];
-            const serviceIdx = childPath.indexOf(service);
-            const segments = childPath.slice(serviceIdx + 1);
-            mappings.push({ fsPath, service, segments });
-        }
+		if (child.$path) {
+			const fsPath = resolve(cwd, child.$path);
+			const service = childPath.find((p) => ROBLOX_SERVICES.has(p)) ?? childPath[0];
+			const serviceIdx = childPath.indexOf(service);
+			const segments = childPath.slice(serviceIdx + 1);
+			mappings.push({ fsPath, service, segments });
+		}
 
-        walkTree(child, childPath, mappings, cwd);
-    }
+		walkTree(child, childPath, mappings, cwd);
+	}
 }
 
 export interface RojoResolution {
-    service: string;
-    segments: string[];
+	service: string;
+	segments: string[];
 }
 
 export function resolveRojoPath(
-    rojoProjectPath: string,
-    targetFilePath: string,
-    cwd: string,
+	rojoProjectPath: string,
+	targetFilePath: string,
+	cwd: string,
 ): RojoResolution | null {
-    if (!existsSync(rojoProjectPath)) return null;
+	if (!existsSync(rojoProjectPath)) return null;
 
-    let project: { tree: RojoNode };
-    try {
-        project = JSON.parse(readFileSync(rojoProjectPath, "utf-8"));
-    } catch {
-        return null;
-    }
+	let project: { tree: RojoNode };
+	try {
+		project = JSON.parse(readFileSync(rojoProjectPath, "utf-8"));
+	} catch {
+		return null;
+	}
 
-    const mappings: PathMapping[] = [];
-    walkTree(project.tree, [], mappings, cwd);
+	const mappings: PathMapping[] = [];
+	walkTree(project.tree, [], mappings, cwd);
 
-    const targetAbs = resolve(cwd, targetFilePath);
+	const targetAbs = resolve(cwd, targetFilePath);
 
-    let best: PathMapping | null = null;
-    let bestLen = 0;
+	let best: PathMapping | null = null;
+	let bestLen = 0;
 
-    for (const mapping of mappings) {
-        if (targetAbs.startsWith(mapping.fsPath) && mapping.fsPath.length > bestLen) {
-            best = mapping;
-            bestLen = mapping.fsPath.length;
-        }
-    }
+	for (const mapping of mappings) {
+		if (targetAbs.startsWith(mapping.fsPath) && mapping.fsPath.length > bestLen) {
+			best = mapping;
+			bestLen = mapping.fsPath.length;
+		}
+	}
 
-    if (!best) return null;
+	if (!best) return null;
 
-    const rel = relative(best.fsPath, targetAbs)
-        .replace(/\\/g, "/")
-        .replace(/\.luau?$/, "");
+	const rel = relative(best.fsPath, targetAbs)
+		.replace(/\\/g, "/")
+		.replace(/\.luau?$/, "");
 
-    const relSegments = rel.split("/").filter(Boolean);
+	const relSegments = rel.split("/").filter(Boolean);
 
-    return {
-        service: best.service,
-        segments: [...best.segments, ...relSegments],
-    };
+	return {
+		service: best.service,
+		segments: [...best.segments, ...relSegments],
+	};
 }
 
 export function buildTsImport(resolution: RojoResolution): string {
-    const args = resolution.segments.map((s) => `"${s}"`).join(", ");
-    return `TS.import(script, game:GetService("${resolution.service}"), ${args})`;
+	const args = resolution.segments.map((s) => `"${s}"`).join(", ");
+	return `TS.import(script, game:GetService("${resolution.service}"), ${args})`;
 }
 
 // Always use WaitForChild — safer than dot notation for async instance loading,
 // and matches the pattern rbxtsc itself uses for RuntimeLib and Promise.
 export function buildDirectRequire(resolution: RojoResolution): string {
-    let path = `game:GetService("${resolution.service}")`;
-    for (const seg of resolution.segments) {
-        path += `:WaitForChild("${seg}")`;
-    }
-    return `require(${path})`;
+	let path = `game:GetService("${resolution.service}")`;
+	for (const seg of resolution.segments) {
+		path += `:WaitForChild("${seg}")`;
+	}
+	return `require(${path})`;
 }
