@@ -1,5 +1,5 @@
-import { resolve, relative, dirname, basename } from "path";
 import { existsSync, readFileSync } from "fs";
+import { resolve, relative, dirname, basename } from "path";
 
 interface RojoNode {
 	$path?: string;
@@ -32,43 +32,6 @@ const ROBLOX_SERVICES = new Set([
 	"RunService",
 ]);
 
-/**
- * Build a require() using only relative script-tree navigation.
- * Used as a fallback when no .project.json exists.
- *
- * e.g. from  out/shared/Foo.luau
- *      to    out/net/Bar.luau
- * →  require(script.Parent.Parent.net.Bar)
- *
- * @param fromFilePath  absolute path of the file doing the requiring
- * @param toFilePath    absolute path of the module being required
- */
-export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
-	const fromDir = dirname(fromFilePath);
-	const fromBase = basename(fromFilePath)
-		.replace(/\.luau?$/, "")
-		.replace(/\.ts$/, "");
-	const isInit = fromBase === "init" || fromBase === "index";
-
-	const rel = relative(fromDir, toFilePath)
-		.replace(/\\/g, "/")
-		.replace(/\.luau?$/, "");
-
-	const parts = rel.split("/");
-	// init.luau's `script` IS the folder, so no initial .Parent needed
-	let path = isInit ? "script" : "script.Parent";
-
-	for (const part of parts) {
-		if (part === "..") {
-			path += ".Parent";
-		} else {
-			path += `:WaitForChild("${part}")`;
-		}
-	}
-
-	return `require(${path})`;
-}
-
 function walkTree(node: RojoNode, path: string[], mappings: PathMapping[], cwd: string): void {
 	for (const [key, value] of Object.entries(node)) {
 		if (key.startsWith("$") || typeof value !== "object" || value === null) continue;
@@ -97,7 +60,7 @@ export function resolveRojoPath(
 	targetFilePath: string,
 	cwd: string,
 ): RojoResolution | null {
-	if (!existsSync(rojoProjectPath)) return null;
+	if (!rojoProjectPath || !existsSync(rojoProjectPath)) return null;
 
 	let project: { tree: RojoNode };
 	try {
@@ -140,12 +103,44 @@ export function buildTsImport(resolution: RojoResolution): string {
 	return `TS.import(script, game:GetService("${resolution.service}"), ${args})`;
 }
 
-// Always use WaitForChild — safer than dot notation for async instance loading,
-// and matches the pattern rbxtsc itself uses for RuntimeLib and Promise.
 export function buildDirectRequire(resolution: RojoResolution): string {
 	let path = `game:GetService("${resolution.service}")`;
 	for (const seg of resolution.segments) {
 		path += `:WaitForChild("${seg}")`;
 	}
+	return `require(${path})`;
+}
+
+/**
+ * Build a require() using only relative script-tree navigation.
+ * Used as a fallback when no .project.json exists.
+ *
+ * e.g. from  out/transport/queue.luau  →  out/type.luau
+ *   script.Parent = transport folder
+ *   .Parent       = out folder
+ *   :WaitForChild("type")
+ * → require(script.Parent.Parent:WaitForChild("type"))
+ */
+export function buildRelativeRequire(fromFilePath: string, toFilePath: string): string {
+	const fromBase = basename(fromFilePath).replace(/\.luau?$/, "");
+	const isInit = fromBase === "init" || fromBase === "index";
+
+	const fromDir = dirname(fromFilePath);
+	const rel = relative(fromDir, toFilePath)
+		.replace(/\\/g, "/")
+		.replace(/\.luau?$/, "");
+
+	const parts = rel.split("/");
+	// init.luau's `script` IS the folder; regular files need .Parent to reach their folder
+	let path = isInit ? "script" : "script.Parent";
+
+	for (const part of parts) {
+		if (part === "..") {
+			path += ".Parent";
+		} else {
+			path += `:WaitForChild("${part}")`;
+		}
+	}
+
 	return `require(${path})`;
 }

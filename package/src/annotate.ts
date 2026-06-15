@@ -174,7 +174,7 @@ function buildLumineRequire(): string {
 function buildModuleRequire(
 	rojoProject: string,
 	sourceLuauPath: string,
-	currentFilePath: string, // ← new param
+	currentFilePath: string,
 	cwd: string,
 ): string {
 	const resolution = resolveRojoPath(rojoProject, sourceLuauPath, cwd);
