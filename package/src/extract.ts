@@ -435,6 +435,22 @@ function convertFunctionType(
 	return { kind: "function", params: luauParams, returns: ret };
 }
 
+function toFunctionSignature(
+	name: string,
+	params: ts.NodeArray<ts.ParameterDeclaration>,
+	returnType: ts.TypeNode | undefined,
+	typeParams: string[],
+	ctx: Ctx,
+): FunctionSignature {
+	const fnType = convertFunctionType(params, returnType, ctx);
+	return {
+		name,
+		params: fnType.kind === "function" ? fnType.params : [],
+		returnType: fnType.kind === "function" ? fnType.returns : LuauVoid,
+		typeParams,
+	};
+}
+
 /** Given an array table type {T} or {[number]: T}, extract T. Otherwise return as-is. */
 function extractArrayElement(t: LuauType): LuauType {
 	if (t.kind === "table" && t.indexer && t.fields.length === 0) return t.indexer.value;
@@ -574,6 +590,52 @@ function extractInterfaceMembers(
 	return fields;
 }
 
+function extractClassMembers(
+	node: ts.ClassDeclaration,
+	source: ts.SourceFile,
+	ctx: Ctx,
+	classTypeParams: string[],
+): LuauField[] {
+	const fields: LuauField[] = [];
+
+	for (const member of node.members) {
+		const isPrivate = ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.PrivateKeyword);
+		if (isPrivate) continue;
+
+		if (ts.isPropertyDeclaration(member) && member.name) {
+			const propType = member.type ? tsNodeToLuau(member.type, ctx) : LuauAny;
+			fields.push({
+				name: member.name.getText(source),
+				type: propType,
+				optional: !!member.questionToken,
+				isMethod: false,
+			});
+		}
+
+		if (ts.isMethodDeclaration(member) && member.name) {
+			const { names: methodTypeParams } = extractTypeParams(member, ctx);
+			if (methodTypeParams.length > 0) continue;
+
+			const methodCtx: Ctx = {
+				...ctx,
+				typeParams: new Set([...classTypeParams, ...methodTypeParams]),
+			};
+			fields.push({
+				name: member.name.getText(source),
+				type: convertFunctionType(
+					member.parameters,
+					member.type as ts.TypeNode | undefined,
+					methodCtx,
+				),
+				optional: !!member.questionToken,
+				isMethod: true,
+			});
+		}
+	}
+
+	return fields;
+}
+
 // ── Collect sibling type names from a namespace block ────────────────────────
 
 /**
@@ -632,21 +694,64 @@ export function extractManifest(dtsPath: string): TypeManifest {
 		if (ts.isFunctionDeclaration(node) && node.name) {
 			const name = node.name.text;
 			const { names: typeParams } = extractTypeParams(node, ctx);
-			const params: ParamInfo[] = Array.from(node.parameters).map((p) => {
-				const isRest = !!p.dotDotDotToken;
-				const pType = p.type ? tsNodeToLuau(p.type, ctx) : LuauAny;
-				return {
-					name: p.name
-						.getText(source)
-						.replace(/^\.\.\./, "")
-						.trim(),
-					type: isRest ? extractArrayElement(pType) : pType,
-					optional: !!p.questionToken,
-					rest: isRest,
-				};
-			});
-			const returnType = tsNodeToLuau(node.type, ctx);
-			manifest.functions[name] = { name, params, returnType, typeParams };
+			manifest.functions[name] = toFunctionSignature(
+				name,
+				node.parameters,
+				node.type,
+				typeParams,
+				ctx,
+			);
+		}
+
+		// ── Class declarations ────────────────────────────────────────────────
+		if (ts.isClassDeclaration(node) && node.name) {
+			const name = node.name.text;
+			const { names: classTypeParams, defaults: typeParamDefaults } = extractTypeParams(node, ctx);
+			const classCtx: Ctx = {
+				...ctx,
+				typeParams: new Set(classTypeParams),
+			};
+
+			manifest.types[name] = {
+				name,
+				typeParams: classTypeParams,
+				typeParamDefaults,
+				body: {
+					kind: "table",
+					fields: extractClassMembers(node, source, classCtx, classTypeParams),
+				},
+			};
+
+			for (const member of node.members) {
+				if (ts.isConstructorDeclaration(member)) {
+					const signatureName = `${name}:constructor`;
+					manifest.functions[signatureName] = toFunctionSignature(
+						signatureName,
+						member.parameters,
+						undefined,
+						classTypeParams,
+						classCtx,
+					);
+				}
+
+				if (ts.isMethodDeclaration(member) && member.name) {
+					const methodName = member.name.getText(source);
+					const { names: methodTypeParams } = extractTypeParams(member, classCtx);
+					const signatureName = `${name}:${methodName}`;
+					const signatureTypeParams = [...classTypeParams, ...methodTypeParams];
+					const methodCtx: Ctx = {
+						...classCtx,
+						typeParams: new Set(signatureTypeParams),
+					};
+					manifest.functions[signatureName] = toFunctionSignature(
+						signatureName,
+						member.parameters,
+						member.type as ts.TypeNode | undefined,
+						signatureTypeParams,
+						methodCtx,
+					);
+				}
+			}
 		}
 
 		// ── Interface declarations ────────────────────────────────────────────

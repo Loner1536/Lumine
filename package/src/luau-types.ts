@@ -107,8 +107,10 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
 
         case "optional": {
             const inner = printLuauType(t.inner, depth + 1, inGenericArg);
-            // Wrap unions so we get (A | B)? not A | B?
-            return t.inner.kind === "union" ? `(${inner})?` : `${inner}?`;
+            // Wrap lower-precedence types so optional applies to the whole type.
+            return t.inner.kind === "function" || t.inner.kind === "intersection" || t.inner.kind === "union"
+                ? `(${inner})?`
+                : `${inner}?`;
         }
 
         case "union":
@@ -162,7 +164,7 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
 function printFnParam(p: LuauFnParam, depth: number): string {
     if (p.rest) return `...${printLuauType(p.type, depth + 1, true)}`;
     const opt = p.optional ? "?" : "";
-    return `${p.name}: ${printLuauType(p.type, depth + 1, true)}${opt}`;
+    return `${p.name}: ${printOptionalTarget(p.type, depth + 1, true, p.optional)}${opt}`;
 }
 
 /** ": T" for return annotations, or "" for void. */
@@ -175,7 +177,20 @@ export function printReturn(t: LuauType): string {
 export function printParam(name: string, t: LuauType, optional: boolean, rest: boolean): string {
     if (rest) return `...: ${printLuauType(t, 0, true)}`;
     const opt = optional ? "?" : "";
-    return `${name}: ${printLuauType(t, 0, false)}${opt}`;
+    return `${name}: ${printOptionalTarget(t, 0, false, optional)}${opt}`;
+}
+
+function printOptionalTarget(
+    t: LuauType,
+    depth: number,
+    inGenericArg: boolean,
+    optional: boolean,
+): string {
+    const printed = printLuauType(t, depth, inGenericArg);
+    if (!optional) return printed;
+    return t.kind === "function" || t.kind === "intersection" || t.kind === "union"
+        ? `(${printed})`
+        : printed;
 }
 
 /** True if any node in the tree references a _Lumine.X builtin. */
