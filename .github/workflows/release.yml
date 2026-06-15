@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: # 👈 This enables the "Run workflow" button on GitHub
+    inputs:
+      tag_name:
+        description: 'Release Tag Name (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
@@ -85,6 +91,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # 👈 Uses input tag if run manually, or the pushed tag if run automatically
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: artifacts/*.zip
           generate_release_notes: true
-
