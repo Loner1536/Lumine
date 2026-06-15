@@ -78,7 +78,10 @@ function findSignatureEnd(src: string, closeParen: number): number {
 
 function findFunctionSignature(src: string, fnName: string) {
 	const esc = escapeRegExp(fnName);
-	const re = new RegExp(`^([ \t]*)(?:local function ${esc}|local ${esc}\\s*=\\s*function)`, "m");
+	const re = new RegExp(
+		`^([ \t]*)(?:local function ${esc}|local ${esc}\\s*=\\s*function|function ${esc})`,
+		"m",
+	);
 	const m = re.exec(src);
 	if (!m) return null;
 	const lineStart = m.index;
@@ -160,6 +163,12 @@ function collectReferencedTypeNames(manifest: TypeManifest): Set<string> {
 	for (const sig of Object.values(manifest.functions)) {
 		sig.params.forEach((p) => scanType(p.type));
 		scanType(sig.returnType);
+	}
+	for (const decl of Object.values(manifest.types)) {
+		scanType(decl.body);
+		for (const typeParamDefault of decl.typeParamDefaults) {
+			if (typeParamDefault) scanType(typeParamDefault);
+		}
 	}
 	return refs;
 }
@@ -327,6 +336,31 @@ function fillTypeParamDefaults(t: LuauType, globalDecls: Map<string, TypeDecl>):
 	}
 }
 
+function remapTypeDecls(
+	manifest: TypeManifest,
+	aliases: Map<string, string>,
+	globalDecls: Map<string, TypeDecl>,
+): TypeManifest {
+	const types: TypeManifest["types"] = {};
+
+	for (const [key, decl] of Object.entries(manifest.types)) {
+		types[key] = {
+			...decl,
+			typeParamDefaults: decl.typeParamDefaults.map((typeParamDefault) =>
+				typeParamDefault
+					? fillTypeParamDefaults(remapType(typeParamDefault, aliases), globalDecls)
+					: undefined,
+			),
+			body: fillTypeParamDefaults(remapType(decl.body, aliases), globalDecls),
+		};
+	}
+
+	return {
+		...manifest,
+		types,
+	};
+}
+
 // ── Main annotateFile ─────────────────────────────────────────────────────────
 
 const INLINE_SENTINEL = "-- [lumine types]";
@@ -432,7 +466,9 @@ export function annotateFile(
 	// This means cross-file requires are always up to date.
 	result = stripOldLumineBlock(result);
 
-	const ownDecls = generateInlineTypeDecls(manifest);
+	const ownDecls = generateInlineTypeDecls(
+		remapTypeDecls(manifest, typeAliasMap, globalTypeDecls),
+	);
 	const needsLumine = usesBuiltins && !result.includes("local _Lumine =");
 	const hasAnything = needsLumine || requireGroups.size > 0 || ownDecls.length > 0;
 
