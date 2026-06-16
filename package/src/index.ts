@@ -130,16 +130,9 @@ function snapshotDtsMtimes(dir: string): Map<string, number> {
     return map;
 }
 
-function hasLumineTypesDeleted(outDir: string): boolean {
-    if (!existsSync(outDir)) return false;
-    const dirs = new Set<string>();
-    for (const f of walkLuau(outDir)) {
-        if (basename(f) !== "_lumine_types.luau") dirs.add(dirname(f));
-    }
-    for (const dir of dirs) {
-        const typesFile = join(dir, "_lumine_types.luau");
-        const hasDts = readdirSync(dir).some((f) => f.endsWith(".d.ts"));
-        if (hasDts && !existsSync(typesFile)) return true;
+function hasLumineTypesDeleted(expectedTypesFiles: Set<string>): boolean {
+    for (const typesFile of expectedTypesFiles) {
+        if (!existsSync(typesFile)) return true;
     }
     return false;
 }
@@ -186,7 +179,7 @@ async function run(ctx: RunContext = {}) {
     );
     if (luauFiles.length === 0) {
         console.log("[lumine] no .luau files found");
-        return;
+        return { typesFiles: new Set<string>() };
     }
 
     // ── Phase 1: Extract manifests ────────────────────────────────────────────
@@ -306,9 +299,11 @@ async function run(ctx: RunContext = {}) {
         dirEntries.set(dir, entries);
     }
 
+    const typesFiles = new Set<string>();
     for (const [dirPath, entries] of dirEntries) {
         if (entries.length === 0) continue;
         const typesFilePath = join(dirPath, "_lumine_types.luau");
+        typesFiles.add(typesFilePath);
         const content = generateDirTypesModule(
             dirPath,
             entries,
@@ -432,6 +427,8 @@ async function run(ctx: RunContext = {}) {
         `[lumine] done — ${totalAnnotated} annotations, ${filesProcessed} files processed${cacheMsg}` +
         (dryRun ? " (dry run)" : ""),
     );
+
+    return { typesFiles };
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -449,6 +446,9 @@ async function runWatch(verbose = false) {
 
     console.log(`[lumine] watching ${outDir} for changes...`);
 
+    let expectedTypesFiles = new Set<string>();
+    const initialResult = await run({ verbose, fileCache, manifestCache });
+    if (initialResult) expectedTypesFiles = initialResult.typesFiles;
     let knownMtimes = snapshotDtsMtimes(outDir);
 
     let running = false;
@@ -456,7 +456,7 @@ async function runWatch(verbose = false) {
 
     const poll = setInterval(() => {
         if (running) return;
-        if (!hasDtsChanges(outDir, knownMtimes) && !hasLumineTypesDeleted(outDir)) return;
+        if (!hasDtsChanges(outDir, knownMtimes) && !hasLumineTypesDeleted(expectedTypesFiles)) return;
         if (debounceTimer) return;
 
         debounceTimer = setTimeout(async () => {
@@ -465,7 +465,8 @@ async function runWatch(verbose = false) {
             knownMtimes = snapshotDtsMtimes(outDir);
             console.log(`[lumine] change detected — re-annotating...`);
             try {
-                await run({ verbose, fileCache, manifestCache });
+                const result = await run({ verbose, fileCache, manifestCache });
+                if (result) expectedTypesFiles = result.typesFiles;
             } finally {
                 running = false;
                 debounceTimer = null;
