@@ -260,6 +260,54 @@ export type function Exclude(T, U)
     return types.unionof(table.unpack(kept))
 end
 
+-- MapProperties<T, V>: mapped type where every property of T gets value type V
+-- TypeScript: { [K in keyof T]: V }
+export type function MapProperties(T, V)
+    if not T:is("table") then return types.unknown end
+    local result = types.newtable(nil)
+    for key, prop in T:properties() do
+        result:setproperty(key, V)
+    end
+    return result
+end
+
+-- MapPropertiesIdentity<T>: mapped type that copies T's properties unchanged
+-- TypeScript: { [K in keyof T]: T[K] }  (or conditional variants Luau can't express)
+export type function MapPropertiesIdentity(T)
+    if not T:is("table") then return types.unknown end
+    local result = types.newtable(nil)
+    for key, prop in T:properties() do
+        if prop.read then result:setreadproperty(key, prop.read) end
+        if prop.write then result:setwriteproperty(key, prop.write) end
+    end
+    return result
+end
+
+-- MapPropertiesReadonly<T>: identity mapped type — copies properties as read-only
+-- TypeScript: { readonly [K in keyof T]: T[K] }
+-- Sets write type to never so Luau's type solver rejects property assignments.
+export type function MapPropertiesReadonly(T)
+    if not T:is("table") then return types.unknown end
+    local result = types.newtable(nil)
+    for key, prop in T:properties() do
+        if prop.read then result:setreadproperty(key, prop.read) end
+        result:setwriteproperty(key, types.never)
+    end
+    return result
+end
+
+-- MapPropertiesReadonlyTo<T, V>: maps every property of T to value type V, read-only
+-- TypeScript: { readonly [K in keyof T]: V }
+export type function MapPropertiesReadonlyTo(T, V)
+    if not T:is("table") then return types.unknown end
+    local result = types.newtable(nil)
+    for key, prop in T:properties() do
+        result:setreadproperty(key, V)
+        result:setwriteproperty(key, types.never)
+    end
+    return result
+end
+
 -- Promise: structural type for the roblox-ts / evaera Promise runtime.
 -- andThen/catch/etc return Promise<any> because Luau table types do not support
 -- per-method generic parameters; callers that need exact types can cast locally.

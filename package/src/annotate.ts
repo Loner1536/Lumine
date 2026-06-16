@@ -134,6 +134,10 @@ function collectReferencedTypeNames(manifest: TypeManifest): Set<string> {
             scanType(t.returns);
         } else if (t.kind === "tuple") t.elements.forEach(scanType);
         else if (t.kind === "keyof") scanType(t.inner);
+        else if (t.kind === "index") {
+            scanType(t.object);
+            scanType(t.key);
+        }
     };
     // Only scan function signatures — type declaration bodies are extracted to
     // _lumine_types.luau and are not present in the individual .luau file.
@@ -159,12 +163,25 @@ function buildModuleRequire(
     return buildRelativeRequire(currentFilePath, sourcePath);
 }
 
+function skipLuauDirectives(src: string, start: number): number {
+    let pos = start;
+    let m: RegExpMatchArray | null;
+    while ((m = src.slice(pos).match(/^--![^\n]*\n/))) pos += m[0].length;
+    return pos;
+}
+
 function skipHeaderRegion(src: string, start: number): number {
     let pos = start;
     while (pos < src.length) {
         const slice = src.slice(pos);
         if (/^\s*\n/.test(slice)) {
             pos += slice.match(/^\s*\n/)![0].length;
+            continue;
+        }
+        // Luau type/optimization directives must stay above all requires
+        const directiveMatch = slice.match(/^--![^\n]*\n/);
+        if (directiveMatch) {
+            pos += directiveMatch[0].length;
             continue;
         }
         if (/^local\s+\w+\s*=\s*require\s*\(/.test(slice)) {
@@ -191,8 +208,11 @@ function skipHeaderRegion(src: string, start: number): number {
 
 function injectAtTop(src: string, block: string): string {
     let pos = 0;
-    const headerMatch = src.match(/^-- Compiled with roblox-ts[^\n]*\n/);
-    if (headerMatch) pos = headerMatch[0].length;
+    // Skip any --! directives that precede the roblox-ts header
+    pos = skipLuauDirectives(src, pos);
+    const headerMatch = src.slice(pos).match(/^-- Compiled with roblox-ts[^\n]*\n/);
+    if (headerMatch) pos += headerMatch[0].length;
+    // Skip --! directives, blank lines, and requires after the header
     pos = skipHeaderRegion(src, pos);
     return src.slice(0, pos) + block + "\n" + src.slice(pos);
 }
@@ -248,41 +268,111 @@ function isTypesOnlyFile(src: string): boolean {
     return meaningful.length === 0;
 }
 
-function remapType(t: LuauType, aliases: Map<string, string>): LuauType {
+/**
+ * Substitute type params in a body type. Used to inline-expand simple aliases
+ * (template literal Concat chains, MapProperties refs) so Luau's type solver
+ * doesn't have to resolve the expansion through a cross-module type alias.
+ */
+function substituteTypeParams(t: LuauType, subs: Map<string, LuauType>): LuauType {
+    switch (t.kind) {
+        case "reference": {
+            if (!t.args?.length && subs.has(t.name)) return subs.get(t.name)!;
+            const args = t.args?.map((a) => substituteTypeParams(a, subs));
+            return { kind: "reference", name: t.name, args };
+        }
+        case "optional":
+            return { kind: "optional", inner: substituteTypeParams(t.inner, subs) };
+        case "union":
+            return { kind: "union", members: t.members.map((m) => substituteTypeParams(m, subs)) };
+        case "intersection":
+            return {
+                kind: "intersection",
+                members: t.members.map((m) => substituteTypeParams(m, subs)),
+            };
+        case "tuple":
+            return {
+                kind: "tuple",
+                elements: t.elements.map((e) => substituteTypeParams(e, subs)),
+            };
+        case "keyof":
+            return { kind: "keyof", inner: substituteTypeParams(t.inner, subs) };
+        case "index":
+            return {
+                kind: "index",
+                object: substituteTypeParams(t.object, subs),
+                key: substituteTypeParams(t.key, subs),
+            };
+        default:
+            return t;
+    }
+}
+
+function remapType(
+    t: LuauType,
+    aliases: Map<string, string>,
+    decls?: Map<string, import("./types").TypeDecl>,
+): LuauType {
     switch (t.kind) {
         case "reference": {
             const aliased = aliases.get(t.name);
+            const args = t.args?.map((a) => remapType(a, aliases, decls));
+
+            // Inline-expand _Lumine.X-backed aliases (template literal Concat chains,
+            // MapProperties refs, etc.) so Luau's type solver doesn't have to resolve
+            // them through a cross-module alias lookup — which currently gives *error-type*.
+            if (decls && aliased && args?.length) {
+                const exportedName = aliased.slice(aliased.lastIndexOf(".") + 1);
+                const decl = decls.get(exportedName);
+                if (
+                    decl &&
+                    decl.body.kind === "reference" &&
+                    decl.body.name.startsWith("_Lumine.") &&
+                    decl.typeParams.length === args.length
+                ) {
+                    const subs = new Map(decl.typeParams.map((p, i) => [p, args[i]] as const));
+                    return substituteTypeParams(decl.body, subs);
+                }
+            }
+
             const name = aliased ?? t.name;
-            const args = t.args?.map((a) => remapType(a, aliases));
             return { kind: "reference", name, args };
         }
         case "optional":
-            return { kind: "optional", inner: remapType(t.inner, aliases) };
+            return { kind: "optional", inner: remapType(t.inner, aliases, decls) };
         case "union":
-            return { kind: "union", members: t.members.map((m) => remapType(m, aliases)) };
+            return { kind: "union", members: t.members.map((m) => remapType(m, aliases, decls)) };
         case "intersection":
-            return { kind: "intersection", members: t.members.map((m) => remapType(m, aliases)) };
+            return {
+                kind: "intersection",
+                members: t.members.map((m) => remapType(m, aliases, decls)),
+            };
         case "table":
             return {
                 kind: "table",
-                fields: t.fields.map((f) => ({ ...f, type: remapType(f.type, aliases) })),
+                fields: t.fields.map((f) => ({ ...f, type: remapType(f.type, aliases, decls) })),
                 indexer: t.indexer
                     ? {
-                        key: remapType(t.indexer.key, aliases),
-                        value: remapType(t.indexer.value, aliases),
+                        key: remapType(t.indexer.key, aliases, decls),
+                        value: remapType(t.indexer.value, aliases, decls),
                     }
                     : undefined,
             };
         case "function":
             return {
                 kind: "function",
-                params: t.params.map((p) => ({ ...p, type: remapType(p.type, aliases) })),
-                returns: remapType(t.returns, aliases),
+                params: t.params.map((p) => ({ ...p, type: remapType(p.type, aliases, decls) })),
+                returns: remapType(t.returns, aliases, decls),
             };
         case "tuple":
-            return { kind: "tuple", elements: t.elements.map((e) => remapType(e, aliases)) };
+            return { kind: "tuple", elements: t.elements.map((e) => remapType(e, aliases, decls)) };
         case "keyof":
-            return { kind: "keyof", inner: remapType(t.inner, aliases) };
+            return { kind: "keyof", inner: remapType(t.inner, aliases, decls) };
+        case "index":
+            return {
+                kind: "index",
+                object: remapType(t.object, aliases, decls),
+                key: remapType(t.key, aliases, decls),
+            };
         default:
             return t;
     }
@@ -343,6 +433,12 @@ function qualifyBareRefs(
             };
         case "keyof":
             return { kind: "keyof", inner: qualifyBareRefs(t.inner, qualifier, globalOrigins) };
+        case "index":
+            return {
+                kind: "index",
+                object: qualifyBareRefs(t.object, qualifier, globalOrigins),
+                key: qualifyBareRefs(t.key, qualifier, globalOrigins),
+            };
         default:
             return t;
     }
@@ -402,6 +498,8 @@ function fillTypeParamDefaults(
             return { kind: "tuple", elements: t.elements.map(fill) };
         case "keyof":
             return { kind: "keyof", inner: fill(t.inner) };
+        case "index":
+            return { kind: "index", object: fill(t.object), key: fill(t.key) };
         default:
             return t;
     }
@@ -507,7 +605,7 @@ export function annotateFile(
             const isRest = rawName.startsWith("...");
             const cleanName = rawName.replace(/^\.\.\./, "") || param.name;
             const remapped = fillTypeParamDefaults(
-                remapType(param.type, typeAliasMap),
+                remapType(param.type, typeAliasMap, globalTypeDecls),
                 globalTypeDecls,
                 globalTypeOrigins,
                 typeAliasMap,
@@ -517,7 +615,7 @@ export function annotateFile(
         });
 
         const remappedReturn = fillTypeParamDefaults(
-            remapType(sig.returnType, typeAliasMap),
+            remapType(sig.returnType, typeAliasMap, globalTypeDecls),
             globalTypeDecls,
             globalTypeOrigins,
             typeAliasMap,

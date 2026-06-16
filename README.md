@@ -51,9 +51,11 @@ end
 
 After running `lumine`, the files are annotated in place:
 
-**`types.luau`** — type declarations injected at the top:
+**`shared/_lumine_types.luau`** — type declarations aggregated per directory:
 ```lua
--- [lumine types]
+-- [lumine dir types] shared/
+
+-- types.luau
 export type Result<T, E> = {
     ok: boolean,
     value: T?,
@@ -65,12 +67,14 @@ export type Player = {
     name: string,
     team: string?,
 }
+
+return {}
 ```
 
 **`game.luau`** — function signatures annotated, cross-file require added:
 ```lua
 -- [lumine types]
-local _Types = require(...)  -- resolves to types.luau via Rojo
+local _Types = require(...)  -- resolves to shared/_lumine_types.luau via Rojo
 
 local function getPlayer(userId: number): _Types.Result<_Types.Player, string>
     ...
@@ -82,7 +86,7 @@ end
 
 Notice that `Result<Player>` (one type arg) becomes `Result<Player, string>` — Lumine fills in TypeScript's default type parameter `E = string` automatically, keeping Luau's arity correct.
 
-Lumine also writes `Lumine.lua` into the roblox-ts include folder (alongside `RuntimeLib.lua`) containing Luau type function implementations for `Partial<T>`, `Required<T>`, `Promise<T>`, and other utility types.
+Lumine also writes `Lumine.luau` into the roblox-ts include folder (alongside `RuntimeLib.lua`) containing Luau type function implementations for `Partial<T>`, `Required<T>`, `Promise<T>`, and other utility types.
 
 ---
 
@@ -94,7 +98,7 @@ Add Lumine to your project's `rokit.toml`:
 
 ```toml
 [tools]
-lumine = "loner1536/lumine@0.1.9"
+lumine = "loner1536/lumine@0.2.0"
 ```
 
 Then run:
@@ -149,7 +153,7 @@ includeDir = "out/include"
 
 ```
 lumine                  Run once — annotate all .luau files in outDir
-lumine -w, --watch      Watch mode — re-annotate on .luau changes (debounced 800ms)
+lumine -w, --watch      Watch mode — re-annotate on .d.ts changes (debounced 800ms)
 lumine --dry-run        Show what would be annotated without writing
 lumine --verbose        Log each annotated file (also works with --watch)
 lumine -v, --version    Print version
@@ -221,6 +225,16 @@ All mappings below are verified against actual compiler output (`playground/out/
 | `<T>` / `<T, U>` | `<T>` / `<T, U>` (pass-through) |
 | `<T extends string>` constraint | `<T>` (constraint stripped) |
 | `keyof T` | `keyof<T>` |
+| `T[K]` indexed access | `index<T, K>` |
+
+### Template literal types
+
+| TypeScript | Luau |
+|---|---|
+| `` `literal` `` (no spans) | `"literal"` (string singleton) |
+| `` `${A}${B}` `` where all spans are string singletons | collapsed eagerly to a single string singleton |
+| `` `${T}` `` where `T` is the primitive `string` | `string` (short-circuits) |
+| `` `prefix${T}suffix` `` where any span is a type parameter or reference | `string` (Luau type functions cannot defer execution over free generics) |
 
 ### Literal types
 
@@ -239,6 +253,17 @@ All mappings below are verified against actual compiler output (`playground/out/
 | `Readonly<T>` | `T` (Readonly stripped, Luau has no equivalent) |
 | `Namespace.Type<T>` | `Namespace_Type<T>` (underscore-joined, exported inline) |
 
+### Mapped types
+
+| TypeScript | Luau |
+|---|---|
+| `{ [K in keyof T]: V }` | `_Lumine.MapProperties<T, V>` |
+| `{ [K in keyof T]: T[K] }` | `_Lumine.MapPropertiesIdentity<T>` |
+| `{ readonly [K in keyof T]: T[K] }` | `_Lumine.MapPropertiesReadonly<T>` |
+| `{ readonly [K in keyof T]: V }` | `_Lumine.MapPropertiesReadonlyTo<T, V>` |
+| `{ [K in keyof T]?: T[K] }` | `_Lumine.Partial<T>` |
+| `{ [K in keyof ConcreteType]: V }` | `any` (only type-parameter iteratees supported; concrete types fall back) |
+
 ### roblox-ts specific
 
 | TypeScript | Luau |
@@ -251,9 +276,9 @@ All mappings below are verified against actual compiler output (`playground/out/
 | `Promise<Promise<T>>` | `_Lumine.Promise<_Lumine.Promise<T>>` |
 | Roblox types (`RBXScriptSignal`, `Vector3`, `Player`, …) | passed through as-is |
 
-### Utility types via `Lumine.lua`
+### Utility types via `Lumine.luau`
 
-These are implemented as [Luau type functions](https://luau.org/typefunction) in `Lumine.lua` and referenced as `_Lumine.*`:
+These are implemented as [Luau type functions](https://luau.org/typefunction) in `Lumine.luau` and referenced as `_Lumine.*`:
 
 | TypeScript | Luau |
 |---|---|
@@ -278,14 +303,11 @@ These are valid Luau but lose some TypeScript precision:
 | `T extends X ? A : B` | `A & B` | All conditional branches intersected |
 | `[A, B, C]` plain tuple | `A \| B \| C` | No tuple type in Luau; union of member types |
 
-### Not representable (fallback to `any` or `string`)
+### Not representable (fallback to `any`)
 
 | TypeScript | Luau | Notes |
 |---|---|---|
-| `{ [K in keyof T]?: T[K] }` mapped type | `any` | No mapped types in Luau |
-| `` `on${string}` `` template literal | `string` | No template literal types in Luau |
-| `T[K]` indexed access | `any` | Not supported |
-| `typeof X` in type position | `any` | Not supported |
+| `typeof X` in type position | `any` | Luau's `typeof()` is a runtime function, not a type-level construct — no equivalent to emit |
 | `infer U` | `any` | No `infer` in Luau |
 
 ### Default type parameters
@@ -296,9 +318,9 @@ The `this: void` parameter emitted by rbxtsc is silently skipped and does not af
 
 ---
 
-## Builtin utility types (`Lumine.lua`)
+## Builtin utility types (`Lumine.luau`)
 
-Lumine writes `Lumine.lua` into your include folder next to `RuntimeLib.lua`. It implements utility types as [Luau type functions](https://luau.org/typefunction):
+Lumine writes `Lumine.luau` into your include folder next to `RuntimeLib.lua`. It implements utility types as [Luau type functions](https://luau.org/typefunction):
 
 | Type | Behaviour |
 |---|---|
@@ -314,18 +336,27 @@ Lumine writes `Lumine.lua` into your include folder next to `RuntimeLib.lua`. It
 | `_Lumine.Exclude<T, U>` | Removes union members structurally assignable to `U` |
 | `_Lumine.NoInfer<T>` | Identity — TypeScript inference hint, no Luau equivalent |
 | `_Lumine.Promise<T>` | Structural type matching the roblox-ts Promise runtime |
+| `_Lumine.MapProperties<T, V>` | Maps every property of `T` to value type `V` |
+| `_Lumine.MapPropertiesIdentity<T>` | Copies `T`'s properties unchanged (identity mapped type) |
+| `_Lumine.MapPropertiesReadonly<T>` | Copies `T`'s properties as read-only (write type set to `never`) |
+| `_Lumine.MapPropertiesReadonlyTo<T, V>` | Maps every property of `T` to `V`, read-only |
 
 ---
 
 ## Cross-file types
 
-When a function in `game.luau` uses a type declared in `types.luau`, Lumine:
+All type declarations are aggregated into a per-directory `_lumine_types.luau` file rather than injected inline into individual source files. When a function in `game.luau` uses a type declared in `types.luau`:
 
-1. Emits `export type Foo = ...` declarations into the file that owns them (`types.luau`).
-2. Injects a `local _Types_xxx = require(...)` at the top of the referencing file.
-3. Qualifies all cross-file type references: `Foo` → `_Types_xxx.Foo`.
+1. Lumine generates `shared/_lumine_types.luau` containing `export type Foo = ...` for every type in that directory.
+2. It injects a `local _Types = require(...)` at the top of every referencing file in the same directory.
+3. Cross-directory references get a separate `local _Types2 = require(...)` (and so on) pointing at that directory's `_lumine_types.luau`.
+4. All cross-file type references are qualified: `Foo` → `_Types.Foo`.
 
 Rojo path resolution is used for the require path when a `default.project.json` is present.
+
+### Naming conflicts
+
+If two files in the same directory both export a type with the same name, Lumine prefixes the exported name with a PascalCase form of the source filename (e.g. `Entry` from `player-controller.luau` becomes `PlayerController_Entry` in `_lumine_types.luau`). A warning is printed when this happens; `--verbose` shows the full list.
 
 ---
 
@@ -336,6 +367,8 @@ Rojo path resolution is used for the require path when a `default.project.json` 
 1. Add the name to `LUMINE_BUILTIN_NAMES` in `package/src/builtins.ts`.
 2. Add the Luau type function implementation to `LUMINE_BUILTIN_FUNCTIONS`.
 3. Handle the TypeScript name in `convertTypeRef` in `package/src/extract.ts` → return `mkRef("_Lumine.Name", args)`.
+
+> **Note:** Template literal types involving free generic type parameters are widened to `string`. Luau type functions cannot defer execution over free generics, so `_Lumine.Concat` is not used and is not a registered builtin.
 
 ### Add a new Roblox Instance type
 
@@ -354,9 +387,11 @@ package/src/
   index.ts        CLI entry + orchestration (runOnce / runWatch)
   config.ts       Loads tsconfig.json + lumine.toml
   extract.ts      TypeScript AST → LuauType  (the main conversion layer)
+  convert.ts      String-based .d.ts type parser (fallback when declaration files unavailable)
   luau-types.ts   LuauType AST nodes + printLuauType() printer
-  emit.ts         LuauType → export type declarations + Lumine.lua content
+  emit.ts         LuauType → export type declarations + Lumine.luau content
   annotate.ts     Injects annotations and inline types into .luau files
+  dirs.ts         Generates per-directory _lumine_types.luau aggregation modules
   builtins.ts     LUMINE_BUILTIN_NAMES + LUMINE_BUILTIN_FUNCTIONS
   rojo.ts         Resolves file paths via Rojo project JSON
   types.ts        TypeManifest, LumineConfig, AnnotationResult interfaces
@@ -368,8 +403,9 @@ Types flow one way:
 
 ```
 .d.ts  →  extract.ts (ts.TypeNode → LuauType)
+       →  dirs.ts (LuauType → _lumine_types.luau per directory)
        →  annotate.ts (LuauType → printLuauType() → inject into .luau)
-       →  emit.ts (LuauType → export type declarations)
+       →  emit.ts (LuauType → Lumine.luau builtins)
 ```
 
 The injected block is delimited by `-- [lumine types]` and is fully replaced on each run, so annotations stay current without stale state.

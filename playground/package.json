@@ -1,28 +1,28 @@
 {
-    "name": "playground",
-    "scripts": {
-        "build": "rojo build -o ./playground.rbxlx",
-        "watch": "rbxtsc -p ./src -i ./out/include -w",
-        "compile": "rm -rf ./out && rbxtsc -p ./src -i ./out/include && lumine",
-        "dev": "concurrently \"rojo serve default.project.json --address 0.0.0.0 \" \"rbxtsc -w -p ./src -i ./out/include \" \"lumine --watch\""
-    },
-    "dependencies": {
-        "@rbxts/services": "^1.6.0",
-        "@rbxts/set-timeout": "^1.1.2",
-        "@rbxts/signal": "^1.1.1"
-    },
-    "devDependencies": {
-        "@biomejs/biome": "^2.4.2",
-        "@rbxts/compiler-types": "^3.0.0-types.0",
-        "@rbxts/types": "^1.0.908",
-        "@types/node": "^24.10.13",
-        "concurrently": "^9.2.1",
-        "patch-package": "^8.0.1",
-        "postinstall-postinstall": "^2.1.0",
-        "roblox-ts": "^3.0.0",
-        "tsx": "^4.21.0",
-        "turbo": "^2.8.10",
-        "typescript": "=5.5.3",
-        "lumine": "workspace:*"
-    }
+	"name": "playground",
+	"scripts": {
+		"build": "rojo build -o ./playground.rbxlx",
+		"watch": "rbxtsc -p ./src -i ./out/include -w",
+		"compile": "rm -rf ./out && rbxtsc -p ./src -i ./out/include && lumine",
+		"dev": "concurrently \"rojo serve default.project.json --address 0.0.0.0 \" \"rbxtsc -w -p ./src -i ./out/include \" \"lumine --watch\""
+	},
+	"dependencies": {
+		"@rbxts/services": "^1.6.0",
+		"@rbxts/set-timeout": "^1.1.2",
+		"@rbxts/signal": "^1.1.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.2",
+		"@rbxts/compiler-types": "^3.0.0-types.0",
+		"@rbxts/types": "^1.0.908",
+		"@types/node": "^24.10.13",
+		"concurrently": "^9.2.1",
+		"patch-package": "^8.0.1",
+		"postinstall-postinstall": "^2.1.0",
+		"roblox-ts": "^3.0.0",
+		"tsx": "^4.21.0",
+		"turbo": "^2.8.10",
+		"typescript": "=5.5.3",
+		"lumine": "workspace:*"
+	}
 }

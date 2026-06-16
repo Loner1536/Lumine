@@ -269,3 +269,11 @@ export type Unpack<T> = T extends Array<infer U> ? U : never;
 export function unpack_array<T>(arr: T[]): Unpack<T[]> {
     return undefined as never;
 }
+
+// Mapped type → type function
+export type MappedToString<T extends Record<string, unknown>> = { [K in keyof T]: string };
+export type MappedResult<T extends Record<string, unknown>> = {
+    [K in keyof T]: T[K] extends Array<infer D> ? D : never;
+};
+export function mapped_to_string<T extends Record<string, unknown>>(x: MappedToString<T>): void {}
+export function mapped_result<T extends Record<string, unknown>>(x: MappedResult<T>): void {}

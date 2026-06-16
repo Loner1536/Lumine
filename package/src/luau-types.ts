@@ -9,19 +9,30 @@
 // ── Core AST ──────────────────────────────────────────────────────────────────
 
 export type LuauType =
-    | { kind: "primitive"; name: "number" | "string" | "boolean" | "buffer" | "any" | "never" | "nil" }
-    | { kind: "void" }                              // () — empty tuple, function return
-    | { kind: "optional"; inner: LuauType }         // T?
-    | { kind: "union"; members: LuauType[] }        // A | B | C
+    | {
+        kind: "primitive";
+        name: "number" | "string" | "boolean" | "buffer" | "any" | "never" | "nil";
+    }
+    | { kind: "void" } // () — empty tuple, function return
+    | { kind: "optional"; inner: LuauType } // T?
+    | { kind: "union"; members: LuauType[] } // A | B | C
     | { kind: "intersection"; members: LuauType[] } // A & B
     | { kind: "table"; fields: LuauField[]; indexer?: LuauIndexer }
     | { kind: "function"; params: LuauFnParam[]; returns: LuauType }
     | { kind: "reference"; name: string; args?: LuauType[] } // Name or Name<T, U>
-    | { kind: "singleton_string"; value: string }   // "hello" (already quoted)
+    | { kind: "singleton_string"; value: string } // "hello" (already quoted)
     | { kind: "singleton_number"; value: number }
     | { kind: "singleton_boolean"; value: boolean }
-    | { kind: "tuple"; elements: LuauType[] }       // (T, U) multi-return
-    | { kind: "keyof"; inner: LuauType };           // keyof<T>
+    | { kind: "tuple"; elements: LuauType[] } // (T, U) multi-return
+    | { kind: "keyof"; inner: LuauType } // keyof<T>
+    | { kind: "index"; object: LuauType; key: LuauType } // index<T, K>
+    | {
+        kind: "mapped";
+        param: string;
+        valueType: LuauType | null;
+        readonly: boolean;
+        optional: boolean;
+    }; // {[K in keyof T]: V} → type function
 
 export interface LuauField {
     name: string;
@@ -77,7 +88,10 @@ export function mkIntersection(members: LuauType[]): LuauType {
     const deduped: LuauType[] = [];
     for (const m of members) {
         const key = JSON.stringify(m);
-        if (!seen.has(key)) { seen.add(key); deduped.push(m); }
+        if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(m);
+        }
     }
     if (deduped.length === 0) return LuauAny;
     if (deduped.length === 1) return deduped[0];
@@ -100,7 +114,8 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
     if (depth > 30) return "any";
 
     switch (t.kind) {
-        case "primitive": return t.name;
+        case "primitive":
+            return t.name;
 
         case "void":
             return inGenericArg ? "nil" : "()";
@@ -108,22 +123,24 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
         case "optional": {
             const inner = printLuauType(t.inner, depth + 1, inGenericArg);
             // Wrap lower-precedence types so optional applies to the whole type.
-            return t.inner.kind === "function" || t.inner.kind === "intersection" || t.inner.kind === "union"
+            return t.inner.kind === "function" ||
+                t.inner.kind === "intersection" ||
+                t.inner.kind === "union"
                 ? `(${inner})?`
                 : `${inner}?`;
         }
 
         case "union":
-            return t.members.map(m => printLuauType(m, depth + 1, inGenericArg)).join(" | ");
+            return t.members.map((m) => printLuauType(m, depth + 1, inGenericArg)).join(" | ");
 
         case "intersection":
-            return t.members.map(m => printLuauType(m, depth + 1, inGenericArg)).join(" & ");
+            return t.members.map((m) => printLuauType(m, depth + 1, inGenericArg)).join(" & ");
 
         case "table": {
             const parts: string[] = [];
             if (t.indexer) {
                 parts.push(
-                    `[${printLuauType(t.indexer.key, depth + 1, true)}]: ${printLuauType(t.indexer.value, depth + 1, true)}`
+                    `[${printLuauType(t.indexer.key, depth + 1, true)}]: ${printLuauType(t.indexer.value, depth + 1, true)}`,
                 );
             }
             for (const f of t.fields) {
@@ -135,29 +152,55 @@ export function printLuauType(t: LuauType, depth = 0, inGenericArg = false): str
         }
 
         case "function": {
-            const params = t.params.map(p => printFnParam(p, depth)).join(", ");
-            const ret = t.returns.kind === "void"
-                ? "()"
-                : printLuauType(t.returns, depth + 1, false);
+            const params = t.params.map((p) => printFnParam(p, depth)).join(", ");
+            const ret =
+                t.returns.kind === "void" ? "()" : printLuauType(t.returns, depth + 1, false);
             return `(${params}) -> ${ret}`;
         }
 
         case "reference": {
             if (!t.args?.length) return t.name;
-            const args = t.args.map(a => printLuauType(a, depth + 1, true)).join(", ");
+            const args = t.args.map((a) => printLuauType(a, depth + 1, true)).join(", ");
             return `${t.name}<${args}>`;
         }
 
-        case "singleton_string": return t.value;
-        case "singleton_number": return String(t.value);
-        case "singleton_boolean": return t.value ? "true" : "false";
+        case "singleton_string":
+            return t.value;
+        case "singleton_number":
+            return String(t.value);
+        case "singleton_boolean":
+            return t.value ? "true" : "false";
 
         case "tuple":
             if (t.elements.length === 0) return "()";
-            return `(${t.elements.map(e => printLuauType(e, depth + 1, false)).join(", ")})`;
+            return `(${t.elements.map((e) => printLuauType(e, depth + 1, false)).join(", ")})`;
 
         case "keyof":
             return `keyof<${printLuauType(t.inner, depth + 1, true)}>`;
+
+        case "index":
+            return `index<${printLuauType(t.object, depth + 1, true)}, ${printLuauType(t.key, depth + 1, true)}>`;
+
+        case "mapped": {
+            if (t.valueType === null) {
+                // Identity variants: value is T[K] or infer — Luau can't express it, use helpers
+                if (t.readonly) return `_Lumine.MapPropertiesReadonly<${t.param}>`;
+                if (t.optional) return `_Lumine.Partial<${t.param}>`;
+                return `_Lumine.MapPropertiesIdentity<${t.param}>`;
+            }
+            const v = printLuauType(t.valueType, depth + 1, true);
+            if (t.readonly) return `_Lumine.MapPropertiesReadonlyTo<${t.param}, ${v}>`;
+            if (t.optional) {
+                // Wrap value as optional rather than adding another builtin
+                const optV = printLuauType(
+                    { kind: "optional", inner: t.valueType },
+                    depth + 1,
+                    true,
+                );
+                return `_Lumine.MapProperties<${t.param}, ${optV}>`;
+            }
+            return `_Lumine.MapProperties<${t.param}, ${v}>`;
+        }
     }
 }
 
@@ -199,18 +242,27 @@ export function typeUsesBuiltins(t: LuauType): boolean {
         case "reference":
             if (t.name.startsWith("_Lumine.")) return true;
             return t.args?.some(typeUsesBuiltins) ?? false;
-        case "optional": return typeUsesBuiltins(t.inner);
+        case "optional":
+            return typeUsesBuiltins(t.inner);
         case "union":
-        case "intersection": return t.members.some(typeUsesBuiltins);
+        case "intersection":
+            return t.members.some(typeUsesBuiltins);
         case "table":
-            return t.fields.some(f => typeUsesBuiltins(f.type)) ||
+            return (
+                t.fields.some((f) => typeUsesBuiltins(f.type)) ||
                 (t.indexer
                     ? typeUsesBuiltins(t.indexer.key) || typeUsesBuiltins(t.indexer.value)
-                    : false);
+                    : false)
+            );
         case "function":
-            return t.params.some(p => typeUsesBuiltins(p.type)) || typeUsesBuiltins(t.returns);
-        case "tuple": return t.elements.some(typeUsesBuiltins);
-        case "keyof": return typeUsesBuiltins(t.inner);
-        default: return false;
+            return t.params.some((p) => typeUsesBuiltins(p.type)) || typeUsesBuiltins(t.returns);
+        case "tuple":
+            return t.elements.some(typeUsesBuiltins);
+        case "keyof":
+            return typeUsesBuiltins(t.inner);
+        case "mapped":
+            return true; // always rendered as _Lumine.MapProperties* reference
+        default:
+            return false;
     }
 }
