@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import type { LumineConfig } from "./types";
 
 interface TsConfig {
@@ -12,6 +12,11 @@ interface TsConfig {
 
 interface LumineToml {
 	includeDir?: string;
+}
+
+interface RojoNode {
+	$path?: string;
+	[key: string]: unknown;
 }
 
 function parseTsConfig(cwd: string): TsConfig {
@@ -38,6 +43,43 @@ function parseLumineToml(cwd: string): LumineToml {
 		}
 	}
 	return result;
+}
+
+/**
+ * rbxtsc's include path (-i flag) is independent of tsconfig's outDir, so it
+ * can't be derived from outDir alone. The rojo project file is the one place
+ * that records where the include folder actually lives on disk — walk its
+ * tree and find the $path whose target already contains RuntimeLib.lua
+ * (always emitted by rbxtsc into the real include dir).
+ */
+function findIncludeDirFromRojo(rojoProjectPath: string): string | null {
+	if (!rojoProjectPath || !existsSync(rojoProjectPath)) return null;
+
+	let project: { tree?: RojoNode };
+	try {
+		project = JSON.parse(readFileSync(rojoProjectPath, "utf-8"));
+	} catch {
+		return null;
+	}
+	if (!project.tree) return null;
+
+	const projectDir = dirname(rojoProjectPath);
+
+	function walk(node: RojoNode): string | null {
+		for (const [key, value] of Object.entries(node)) {
+			if (key.startsWith("$") || typeof value !== "object" || value === null) continue;
+			const child = value as RojoNode;
+			if (child.$path) {
+				const fsPath = resolve(projectDir, child.$path);
+				if (existsSync(join(fsPath, "RuntimeLib.lua"))) return fsPath;
+			}
+			const found = walk(child);
+			if (found) return found;
+		}
+		return null;
+	}
+
+	return walk(project.tree);
 }
 
 function findRojoProject(cwd: string): string {
@@ -68,7 +110,7 @@ export function loadConfig(cwd: string = process.cwd()): LumineConfig {
 
 	const includeDir = lumine.includeDir
 		? resolve(cwd, lumine.includeDir)
-		: resolve(outDir, "..", "include");
+		: findIncludeDirFromRojo(rojoProject) ?? resolve(outDir, "..", "include");
 
 	if (!declaration) {
 		console.warn(
