@@ -447,8 +447,6 @@ async function runWatch(verbose = false) {
     console.log(`[lumine] watching ${outDir} for changes...`);
 
     let expectedTypesFiles = new Set<string>();
-    const initialResult = await run({ verbose, fileCache, manifestCache });
-    if (initialResult) expectedTypesFiles = initialResult.typesFiles;
     let knownMtimes = snapshotDtsMtimes(outDir);
 
     let running = false;
