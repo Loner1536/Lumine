@@ -71,9 +71,6 @@ bun-debug.log*
 !.env.example
 .npmrc
 
-# Note: Remove this line if your team shares devcontainer configs
-.devcontainer/
-
 # ==========================================
 # Editor / IDE
 # ==========================================
