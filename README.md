@@ -98,7 +98,7 @@ Add Lumine to your project's `rokit.toml`:
 
 ```toml
 [tools]
-lumine = "loner1536/lumine@0.2.2"
+lumine = "loner1536/lumine@0.2.3"
 ```
 
 Then run:

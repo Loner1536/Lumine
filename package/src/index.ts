@@ -18,7 +18,7 @@ import { generateLumineFile } from "./emit";
 import { generateDirTypesModule } from "./dirs";
 import type { TypeManifest, AnnotationResult, TypeDecl } from "./types";
 
-const VERSION = "0.2.2";
+const VERSION = "0.2.3";
 
 function printHelp() {
     console.log(`lumine v${VERSION}
